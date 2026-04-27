@@ -11,99 +11,361 @@
                     "@graffiti-garden/implementation-local": "https://cdn.jsdelivr.net/npm/@graffiti-garden/implementation-local@1.2.0/dist/browser/index.js",
                     "@graffiti-garden/implementation-decentralized": "https://cdn.jsdelivr.net/npm/@graffiti-garden/implementation-decentralized@0.0.9/dist/browser/index.js",
                     "@graffiti-garden/wrapper-vue": "https://cdn.jsdelivr.net/npm/@graffiti-garden/wrapper-vue@1.2.2/dist/browser/plugin.mjs"
-                } 
+                }
             }
         </script>
         <script src="index.js" type="module"></script>
         <link rel="stylesheet" href="style.css" />
     </head>
+
     <body>
         <div id="app"></div>
+
         <template id="template">
             <div class="screen-selector">
-                <section v-if="!activeChat" class="screen">
+                <!-- HOME ROUTE: ?page=home -->
+                <section v-if="currentRoute === 'home'" class="screen">
+                    <nav class="top-nav">
+                        <button class="nav-link active-nav" @click="goHome">Home</button>
+                        <button class="nav-link" @click="goLogin">Login</button>
+
+                        <span v-if="isFinishingLogin" class="signed-in-pill">
+                            Finishing login...
+                        </span>
+
+                        <span v-else-if="isLoggedIn" class="signed-in-pill">
+                            Signed in as {{ activeActor }}
+                        </span>
+
+                        <span v-else-if="session === undefined" class="signed-in-pill">
+                            Checking login...
+                        </span>
+
+                        <span v-else class="signed-in-pill">
+                            Not signed in
+                        </span>
+                    </nav>
+
                     <div class="utility-row">
                         <input v-model="newChatTitle" placeholder="Chat title" />
                         <button class="pill" @click="newChat">Create</button>
                     </div>
 
+                    <p v-if="statusMessage" class="status-message">
+                        {{ statusMessage }}
+                    </p>
+
                     <div v-if="areChatsLoading">Loading chats...</div>
+
                     <div v-else class="chat-grid">
-                        <button class="chat-card" v-for="(chat, idx) in sortedChats" :key="chat.url" @click="openChat(chat)">
-                            <div class="chat-icon">
-                                <div class="petal" v-for="petalIndex in 8" :key="petalIndex" :style="{ '--i': petalIndex - 1 }"></div>
-                                <div class="chat-center">
-                                    <img
-                                        v-if="idx === 0"
-                                        src="https://images.unsplash.com/photo-1511632765486-a01980e01a18?w=160&h=160&fit=crop"
-                                        alt="Group"
-                                    />
-                                </div>
-                            </div>
-                            <div class="chat-label">{{ chat.value.title }}</div>
-                        </button>
+                        <chat-card
+                            v-for="(chat, idx) in sortedChats"
+                            :key="chat.url"
+                            :chat="chat"
+                            :show-image="idx === 0"
+                            @open-chat="openChat"
+                        ></chat-card>
                     </div>
                 </section>
 
-                <section v-else class="screen chat-view">
+                <!-- LOGIN ROUTE: ?page=login -->
+                <section v-else-if="currentRoute === 'login'" class="screen login-screen">
+                    <div class="login-panel">
+                        <h1>Login</h1>
+
+                        <p v-if="isFinishingLogin" class="login-status">
+                            Finishing login...
+                        </p>
+
+                        <p v-else-if="session === undefined" class="login-status">
+                            Loading login status...
+                        </p>
+
+                        <div v-else-if="isLoggedIn" class="login-actions">
+                            <p class="login-status">
+                                Signed in as <strong>{{ activeActor }}</strong>
+                            </p>
+
+                            <button class="pill" @click="logOut">
+                                Log Out
+                            </button>
+
+                            <button class="pill" @click="goHome">
+                                Go Home
+                            </button>
+                        </div>
+
+                        <div v-else class="login-actions">
+                            <p class="login-status">
+                                You are not signed in.
+                            </p>
+
+                            <button class="pill" @click="logIn">
+                                Log In with Graffiti
+                            </button>
+
+                            <button class="pill" @click="goHome">
+                                Back Home
+                            </button>
+                        </div>
+
+                        <p v-if="statusMessage" class="status-message">
+                            {{ statusMessage }}
+                        </p>
+                    </div>
+                </section>
+
+                <!-- CHAT ROUTE: ?page=chat&chatId=... -->
+                <section v-else-if="currentRoute === 'chat' && activeChat" class="screen chat-view">
                     <div class="chat-header">
                         <button class="icon-btn" @click="closeChat" aria-label="Back">←</button>
+
                         <div class="title-wrap">
                             <div class="chat-center">
-                                <img src="https://images.unsplash.com/photo-1511632765486-a01980e01a18?w=160&h=160&fit=crop" alt="Group" />
+                                <img
+                                    src="https://images.unsplash.com/photo-1511632765486-a01980e01a18?w=160&h=160&fit=crop"
+                                    alt="Group"
+                                />
                             </div>
+
                             <h2 class="chat-title">{{ activeChat.value.title }}</h2>
-                            <span class="chat-status">Statuses</span>
+
+                            <!-- <span v-if="isLoggedIn" class="chat-status">
+                                Signed in
+                            </span>
+
+                            <span v-else class="chat-status">
+                                Not signed in
+                            </span> -->
                         </div>
+
                         <span style="font-size: 40px">🗒️</span>
                     </div>
+
+                    <p v-if="statusMessage" class="status-message">
+                        {{ statusMessage }}
+                    </p>
+
                     <div class="utility-row">
-                        <input v-model="actorToAdd" placeholder="Actor ID to add" />
+                        <input v-model="actorToAdd" placeholder="Username" />
                         <button class="pill" @click="addToChat">Add Person</button>
                     </div>
+
                     <div class="members-panel">
                         <div class="members-title">Members</div>
+
                         <ul class="members-list">
-                            <li v-for="member in activeChatMembers" :key="member">{{ member }}</li>
+                            <li v-for="member in activeChatMembers" :key="member">
+                                {{ member }}
+                            </li>
                         </ul>
                     </div>
 
                     <div class="messages">
                         <div v-if="areMessageObjectsLoading">Loading messages...</div>
-                        <div
+
+                        <message-bubble
                             v-else
                             v-for="message in sortedMessageObjects"
                             :key="message.url"
-                            class="message-row"
-                            :class="{ own: isOwnMessage(message) }"
-                        >
-                            <span v-if="!isOwnMessage(message)" class="avatar">👤</span>
-                            <div class="bubble">
-                                {{ message.value.content }}
-                                <button
-                                    v-if="isOwnMessage(message)"
-                                    @click="deleteMessage(message)"
-                                    style="margin-left: 8px; font-size: 14px"
-                                >
-                                    {{ isDeleting.has(message.url) ? "Deleting..." : "Delete" }}
-                                </button>
-                            </div>
-                            <span v-if="isOwnMessage(message)" class="avatar">👤</span>
-                        </div>
+                            :message="message"
+                            :own="isOwnMessage(message)"
+                            :deleting="isDeleting.has(message.url)"
+                            @delete-message="deleteMessage(message)"
+                        ></message-bubble>
                     </div>
 
+                    <div
+                        v-if="isPresetMenuOpen"
+                        class="preset-backdrop"
+                        @click.self="closePresetMenu"
+                    >
+                        <div class="preset-panel">
+                            <div class="preset-header">
+                                <button class="preset-icon-btn" type="button" @click="closePresetMenu">
+                                    ←
+                                </button>
+
+                                <div class="preset-title-wrap">
+                                    <h2>Presets</h2>
+
+                                    <button
+                                        v-if="!isPresetEditorOpen"
+                                        class="preset-small-btn preset-edit-btn"
+                                        type="button"
+                                        @click="togglePresetEditMode"
+                                    >
+                                        {{ isEditingPresets ? "Done" : "Edit" }}
+                                    </button>
+                                </div>
+
+                                <button
+                                    v-if="!isPresetEditorOpen"
+                                    class="preset-icon-btn"
+                                    type="button"
+                                    @click="openNewPresetEditor"
+                                >
+                                    +
+                                </button>
+
+                                <span v-else class="preset-icon-spacer"></span>
+                            </div>
+
+                            <!-- PRESET LIST VIEW -->
+                            <div v-if="!isPresetEditorOpen">
+                                <div v-if="presets.length === 0" class="preset-empty">
+                                    <p>No presets yet.</p>
+
+                                    <button
+                                        class="preset-large-btn"
+                                        type="button"
+                                        @click="openNewPresetEditor"
+                                    >
+                                        Add Preset
+                                    </button>
+                                </div>
+
+                                <div v-else class="preset-list">
+                                    <button
+                                        v-for="(preset, index) in presets"
+                                        :key="preset.id"
+                                        class="preset-row"
+                                        type="button"
+                                        @click="isEditingPresets ? openPresetEditor(index) : sendPreset(preset)"
+                                    >
+                                        <span class="preset-emoji">{{ preset.emoji }}</span>
+                                        <span class="preset-message">{{ preset.message }}</span>
+                                    </button>
+                                </div>
+                            </div>
+
+                            <!-- ADD / EDIT VIEW -->
+                            <form v-else class="preset-editor-form" @submit.prevent="savePreset">
+                                <label class="preset-field">
+                                    Emoji
+                                    <input
+                                        v-model="presetEmoji"
+                                        placeholder="🚗"
+                                        autocomplete="off"
+                                    />
+                                </label>
+
+                                <label class="preset-field">
+                                    Message
+                                    <textarea
+                                        v-model="presetMessage"
+                                        rows="3"
+                                        placeholder="On my way!"
+                                    ></textarea>
+                                </label>
+
+                                <div class="preset-editor-actions">
+                                    <button
+                                        v-if="editingPresetIndex !== null"
+                                        class="preset-danger-btn"
+                                        type="button"
+                                        @click="deletePreset"
+                                    >
+                                        Delete
+                                    </button>
+
+                                    <button
+                                        class="preset-small-btn"
+                                        type="button"
+                                        @click="closePresetEditor"
+                                    >
+                                        Cancel
+                                    </button>
+
+                                    <button class="preset-small-btn" type="submit">
+                                        Confirm
+                                    </button>
+                                </div>
+                            </form>
+                        </div>
+                    </div>
                     <div class="bottom-bar">
-                        <button class="pill">Presets</button>
+                        <button class="pill" type="button" @click="togglePresetMenu">
+                            Presets
+                        </button>
+
                         <form class="send-wrap" @submit.prevent="sendMessage">
                             <button class="plus-btn" type="button">⊕</button>
                             <input v-model="myMessage" placeholder="Type a message" />
+
                             <button class="pill" type="submit" :disabled="isSending">
                                 {{ isSending ? "Sending..." : "Send" }}
                             </button>
                         </form>
                     </div>
                 </section>
+
+                <!-- FALLBACK / CHAT LOADING -->
+                <section v-else class="screen login-screen">
+                    <div class="login-panel">
+                        <h1>Chat not found</h1>
+
+                        <p v-if="areChatsLoading">
+                            Loading chat...
+                        </p>
+
+                        <p v-else>
+                            This chat does not exist yet, or it has not loaded.
+                        </p>
+
+                        <button class="pill" @click="goHome">
+                            Back Home
+                        </button>
+                    </div>
+                </section>
             </div>
+        </template>
+        <template id="message-bubble-template">
+            <div class="message-bubble-row" :class="{ own: own }">
+                <div class="message-bubble-shell" :class="{ own: own, incoming: !own }">
+                    <div class="message-meta">
+                        <span class="message-author">
+                            {{ own ? "You" : (message.actor || "Unknown user") }}
+                        </span>
+                        <span class="message-time">{{ formattedTime }}</span>
+                    </div>
+
+                    <div class="message-content">
+                        {{ message.value.content }}
+                    </div>
+
+                    <div v-if="own" class="message-actions">
+                        <button
+                            class="delete-message-btn"
+                            @click="$emit('delete-message')"
+                        >
+                            {{ deleting ? "Deleting..." : "Delete" }}
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </template>
+        <template id="chat-card-template">
+            <button class="chat-card" @click="$emit('open-chat', chat)">
+                <div class="chat-icon">
+                    <div
+                        class="petal"
+                        v-for="petalIndex in 8"
+                        :key="petalIndex"
+                        :style="{ '--i': petalIndex - 1 }"
+                    ></div>
+
+                    <div class="chat-center">
+                        <img
+                            v-if="showImage"
+                            src="https://images.unsplash.com/photo-1511632765486-a01980e01a18?w=160&h=160&fit=crop"
+                            alt="Group"
+                        />
+                    </div>
+                </div>
+
+                <div class="chat-label">{{ chat.value.title }}</div>
+            </button>
         </template>
     </body>
 </html>
