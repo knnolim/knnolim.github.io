@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>Muddy Chatroom</title>
+        <script type="importmap">
+            {
+                "imports": {
+                    "vue": "https://cdn.jsdelivr.net/npm/vue@3.5.32/dist/vue.esm-browser.js",
+                    "@graffiti-garden/implementation-local": "https://cdn.jsdelivr.net/npm/@graffiti-garden/implementation-local@1.2.0/dist/browser/index.js",
+                    "@graffiti-garden/implementation-decentralized": "https://cdn.jsdelivr.net/npm/@graffiti-garden/implementation-decentralized@0.0.9/dist/browser/index.js",
+                    "@graffiti-garden/wrapper-vue": "https://cdn.jsdelivr.net/npm/@graffiti-garden/wrapper-vue@1.2.2/dist/browser/plugin.mjs"
+                } 
+            }
+        </script>
+        <script src="index.js" type="module"></script>
+        <link rel="stylesheet" href="style.css" />
+    </head>
+    <body>
+        <div id="app"></div>
+        <template id="template">
+            <div class="screen-selector">
+                <section v-if="!activeChat" class="screen">
+                    <div class="utility-row">
+                        <input v-model="newChatTitle" placeholder="Chat title" />
+                        <button class="pill" @click="newChat">Create</button>
+                    </div>
+
+                    <div v-if="areChatsLoading">Loading chats...</div>
+                    <div v-else class="chat-grid">
+                        <button class="chat-card" v-for="(chat, idx) in sortedChats" :key="chat.url" @click="openChat(chat)">
+                            <div class="chat-icon">
+                                <div class="petal" v-for="petalIndex in 8" :key="petalIndex" :style="{ '--i': petalIndex - 1 }"></div>
+                                <div class="chat-center">
+                                    <img
+                                        v-if="idx === 0"
+                                        src="https://images.unsplash.com/photo-1511632765486-a01980e01a18?w=160&h=160&fit=crop"
+                                        alt="Group"
+                                    />
+                                </div>
+                            </div>
+                            <div class="chat-label">{{ chat.value.title }}</div>
+                        </button>
+                    </div>
+                </section>
+
+                <section v-else class="screen chat-view">
+                    <div class="chat-header">
+                        <button class="icon-btn" @click="closeChat" aria-label="Back">←</button>
+                        <div class="title-wrap">
+                            <div class="chat-center">
+                                <img src="https://images.unsplash.com/photo-1511632765486-a01980e01a18?w=160&h=160&fit=crop" alt="Group" />
+                            </div>
+                            <h2 class="chat-title">{{ activeChat.value.title }}</h2>
+                            <span class="chat-status">Statuses</span>
+                        </div>
+                        <span style="font-size: 40px">🗒️</span>
+                    </div>
+                    <div class="utility-row">
+                        <input v-model="actorToAdd" placeholder="Actor ID to add" />
+                        <button class="pill" @click="addToChat">Add Person</button>
+                    </div>
+                    <div class="members-panel">
+                        <div class="members-title">Members</div>
+                        <ul class="members-list">
+                            <li v-for="member in activeChatMembers" :key="member">{{ member }}</li>
+                        </ul>
+                    </div>
+
+                    <div class="messages">
+                        <div v-if="areMessageObjectsLoading">Loading messages...</div>
+                        <div
+                            v-else
+                            v-for="message in sortedMessageObjects"
+                            :key="message.url"
+                            class="message-row"
+                            :class="{ own: isOwnMessage(message) }"
+                        >
+                            <span v-if="!isOwnMessage(message)" class="avatar">👤</span>
+                            <div class="bubble">
+                                {{ message.value.content }}
+                                <button
+                                    v-if="isOwnMessage(message)"
+                                    @click="deleteMessage(message)"
+                                    style="margin-left: 8px; font-size: 14px"
+                                >
+                                    {{ isDeleting.has(message.url) ? "Deleting..." : "Delete" }}
+                                </button>
+                            </div>
+                            <span v-if="isOwnMessage(message)" class="avatar">👤</span>
+                        </div>
+                    </div>
+
+                    <div class="bottom-bar">
+                        <button class="pill">Presets</button>
+                        <form class="send-wrap" @submit.prevent="sendMessage">
+                            <button class="plus-btn" type="button">⊕</button>
+                            <input v-model="myMessage" placeholder="Type a message" />
+                            <button class="pill" type="submit" :disabled="isSending">
+                                {{ isSending ? "Sending..." : "Send" }}
+                            </button>
+                        </form>
+                    </div>
+                </section>
+            </div>
+        </template>
+    </body>
+</html>
