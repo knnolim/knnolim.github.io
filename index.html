@@ -34,7 +34,7 @@
                         </span>
 
                         <span v-else-if="isLoggedIn" class="signed-in-pill">
-                            Signed in as {{ activeActor }}
+                            Signed in as <actor-handle :actor="activeActor"></actor-handle>
                         </span>
 
                         <span v-else-if="session === undefined" class="signed-in-pill">
@@ -46,7 +46,7 @@
                         </span>
                     </nav>
 
-                    <div class="utility-row">
+                    <div v-if="isLoggedIn" class="utility-row">
                         <input v-model="newChatTitle" placeholder="Chat title" />
                         <button class="pill" @click="newChat">Create</button>
                     </div>
@@ -55,7 +55,17 @@
                         {{ statusMessage }}
                     </p>
 
-                    <div v-if="areChatsLoading">Loading chats...</div>
+                    <div v-if="session === undefined">Checking login...</div>
+
+                    <div v-else-if="!isLoggedIn" class="status-message">
+                        Log in to see your chats.
+                    </div>
+
+                    <div v-else-if="areChatsLoading">Loading chats...</div>
+
+                    <div v-else-if="sortedChats.length === 0" class="status-message">
+                        You do not have any chats yet.
+                    </div>
 
                     <div v-else class="chat-grid">
                         <chat-card
@@ -83,7 +93,7 @@
 
                         <div v-else-if="isLoggedIn" class="login-actions">
                             <p class="login-status">
-                                Signed in as <strong>{{ activeActor }}</strong>
+                                Signed in as <actor-handle :actor="activeActor"></actor-handle>
                             </p>
 
                             <button class="pill" @click="logOut">
@@ -118,7 +128,9 @@
                 <!-- CHAT ROUTE: ?page=chat&chatId=... -->
                 <section v-else-if="currentRoute === 'chat' && activeChat" class="screen chat-view">
                     <div class="chat-header">
-                        <button class="icon-btn" @click="closeChat" aria-label="Back">←</button>
+                        <button class="icon-btn" @click="closeChat" aria-label="Back">
+                            ←
+                        </button>
 
                         <div class="title-wrap">
                             <div class="chat-center">
@@ -128,18 +140,16 @@
                                 />
                             </div>
 
+                            <button class="statuses-button" type="button" @click="openStatuses">
+                                Statuses {{ myCurrentStatus }}
+                            </button>
+
                             <h2 class="chat-title">{{ activeChat.value.title }}</h2>
-
-                            <!-- <span v-if="isLoggedIn" class="chat-status">
-                                Signed in
-                            </span>
-
-                            <span v-else class="chat-status">
-                                Not signed in
-                            </span> -->
                         </div>
 
-                        <span style="font-size: 40px">🗒️</span>
+                        <button class="calendar-icon-btn" @click="openCalendar" aria-label="Open calendar">
+                            🗓️
+                        </button>
                     </div>
 
                     <p v-if="statusMessage" class="status-message">
@@ -156,12 +166,16 @@
 
                         <ul class="members-list">
                             <li v-for="member in activeChatMembers" :key="member">
-                                {{ member }}
+                                <actor-handle :actor="member"></actor-handle>
                             </li>
                         </ul>
                     </div>
 
-                    <div class="messages">
+                    <div
+                        class="messages"
+                        ref="messagesEl"
+                        @scroll.passive="updateMessageStickiness"
+                    >
                         <div v-if="areMessageObjectsLoading">Loading messages...</div>
 
                         <message-bubble
@@ -171,10 +185,260 @@
                             :message="message"
                             :own="isOwnMessage(message)"
                             :deleting="isDeleting.has(message.url)"
+                            :whooshing="whooshingMessageUrl === message.url"
                             @delete-message="deleteMessage(message)"
                         ></message-bubble>
                     </div>
+                    
+                    <div
+                        v-if="isCalendarOpen"
+                        class="event-backdrop"
+                        @click.self="closeCalendar"
+                    >
+                        <div class="event-panel calendar-panel">
+                            <div class="event-header">
+                                <button class="preset-icon-btn" type="button" @click="closeCalendar">
+                                    ←
+                                </button>
 
+                                <h2>Calendar</h2>
+
+                                <span></span>
+                            </div>
+
+                            <button
+                                class="calendar-graphic calendar-button"
+                                type="button"
+                                @click="openRsvpEvents"
+                            >
+                                <div class="calendar-top">
+                                    {{ calendarMonthLabel }}
+                                    <small>{{ calendarYearLabel }}</small>
+                                </div>
+
+                                <div class="calendar-weekdays">
+                                    <span>S</span>
+                                    <span>M</span>
+                                    <span>T</span>
+                                    <span>W</span>
+                                    <span>T</span>
+                                    <span>F</span>
+                                    <span>S</span>
+                                </div>
+
+                                <div class="calendar-grid-mini">
+                                    <span
+                                        v-for="day in calendarDays"
+                                        :key="day.key"
+                                        :class="{ marked: day.hasRsvp, empty: !day.day }"
+                                    >
+                                        {{ day.day }}
+                                    </span>
+                                </div>
+                            </button>
+
+                            <button class="rsvp-count-pill" type="button" @click="openRsvpEvents">
+                                RSVP’d events:
+                            </button>
+
+                            <div v-if="sortedEventObjects.length" class="event-preview-list">
+                                <div
+                                    v-for="event in sortedEventObjects"
+                                    :key="event.url"
+                                    class="event-preview-row"
+                                >
+                                    <div>
+                                        <strong>{{ formatEventDate(event) }}</strong>
+                                        {{ event.value.title }}
+                                        <span class="event-small-time">
+                                            {{ formatEventTime(event) }}
+                                        </span>
+                                    </div>
+
+                                    <button
+                                        v-if="!isRsvped(event)"
+                                        class="event-small-btn"
+                                        type="button"
+                                        @click="rsvpToEvent(event)"
+                                    >
+                                        RSVP
+                                    </button>
+
+                                    <button
+                                        v-else
+                                        class="event-small-btn event-unrsvp-btn"
+                                        type="button"
+                                        @click="unRsvpFromEvent(event)"
+                                    >
+                                        Un-RSVP
+                                    </button>
+                                </div>
+                            </div>
+
+                            <p v-else class="event-empty-text">
+                                No events scheduled yet.
+                            </p>
+
+                            <button class="schedule-event-btn" type="button" @click="openScheduleEvent">
+                                Schedule an Event
+                            </button>
+                        </div>
+                    </div>
+                    <div
+                        v-if="isStatusesOpen"
+                        class="statuses-backdrop"
+                        @click.self="closeStatuses"
+                    >
+                        <div class="statuses-panel">
+                            <div class="statuses-header">
+                                <button class="preset-icon-btn" type="button" @click="closeStatuses">
+                                    ←
+                                </button>
+
+                                <h2>Statuses</h2>
+
+                                <span></span>
+                            </div>
+
+                            <div class="my-status-editor">
+                                <div class="my-status-title">
+                                    Your status: <span>{{ myCurrentStatus }}</span>
+                                </div>
+
+                                <div class="status-choice-grid">
+                                    <button
+                                        v-for="emoji in statusChoices"
+                                        :key="emoji"
+                                        class="status-choice"
+                                        :class="{ selected: selectedStatusEmoji === emoji }"
+                                        type="button"
+                                        @click="selectedStatusEmoji = emoji"
+                                    >
+                                        {{ emoji }}
+                                    </button>
+                                </div>
+
+                                <div class="custom-status-row">
+                                    <input
+                                        v-model="customStatusEmoji"
+                                        maxlength="4"
+                                        placeholder="Custom emoji"
+                                    />
+
+                                    <button
+                                        class="status-save-btn"
+                                        type="button"
+                                        @click="updateMyStatus()"
+                                    >
+                                        Update
+                                    </button>
+                                </div>
+                            </div>
+
+                            <div class="status-members-list">
+                                <div
+                                    v-for="memberStatus in activeChatMemberStatuses"
+                                    :key="memberStatus.actor"
+                                    class="status-member-row"
+                                >
+                                    <span class="status-member-emoji">
+                                        {{ memberStatus.status }}
+                                    </span>
+
+                                    <span class="status-member-name">
+                                        <actor-handle :actor="memberStatus.actor"></actor-handle>
+                                        <small v-if="memberStatus.isOwn">(you)</small>
+                                    </span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div
+                        v-if="isRsvpEventsOpen"
+                        class="event-backdrop"
+                        @click.self="closeRsvpEvents"
+                    >
+                        <div class="event-panel rsvp-panel">
+                            <div class="event-header">
+                                <button class="preset-icon-btn" type="button" @click="closeRsvpEvents">
+                                    ←
+                                </button>
+
+                                <h2>RSVP’d</h2>
+
+                                <span></span>
+                            </div>
+
+                            <div v-if="myRsvpedEvents.length" class="rsvp-event-list">
+                                <div
+                                    v-for="event in myRsvpedEvents"
+                                    :key="event.url"
+                                    class="rsvp-event-row"
+                                >
+                                    <strong>{{ formatEventDate(event) }}</strong>
+
+                                    <span>{{ event.value.title }}</span>
+
+                                    <small>{{ formatEventTime(event) }}</small>
+
+                                    <button
+                                        class="event-small-btn event-unrsvp-btn"
+                                        type="button"
+                                        @click="unRsvpFromEvent(event)"
+                                    >
+                                        Un-RSVP
+                                    </button>
+                                </div>
+                            </div>
+
+                            <p v-else class="event-empty-text">
+                                You have not RSVP’d to any events yet.
+                            </p>
+                        </div>
+                    </div>
+
+                    <div
+                        v-if="isScheduleEventOpen"
+                        class="event-backdrop"
+                        @click.self="cancelScheduleEvent"
+                    >
+                        <form class="event-panel schedule-panel" @submit.prevent="scheduleEvent">
+                            <h2>Schedule</h2>
+
+                            <label class="schedule-field">
+                                <span>Date:</span>
+                                <input v-model="eventDate" type="date" />
+                            </label>
+
+                            <label class="schedule-field">
+                                <span>Time:</span>
+                                <input v-model="eventTime" type="time" />
+                            </label>
+
+                            <label class="schedule-field">
+                                <span>Visibility:</span>
+                                <select v-model="eventVisibility">
+                                    <option value="chat">Everyone in chat</option>
+                                    <option value="private">Only me</option>
+                                </select>
+                            </label>
+
+                            <label class="schedule-field">
+                                <span>Title:</span>
+                                <input v-model="eventTitle" type="text" />
+                            </label>
+
+                            <div class="schedule-actions">
+                                <button type="button" class="schedule-action-btn" @click="cancelScheduleEvent">
+                                    Cancel
+                                </button>
+
+                                <button type="submit" class="schedule-action-btn">
+                                    Confirm
+                                </button>
+                            </div>
+                        </form>
+                    </div>
                     <div
                         v-if="isPresetMenuOpen"
                         class="preset-backdrop"
@@ -230,6 +494,7 @@
                                         v-for="(preset, index) in presets"
                                         :key="preset.id"
                                         class="preset-row"
+                                        :class="{ shaking: isEditingPresets }"
                                         type="button"
                                         @click="isEditingPresets ? openPresetEditor(index) : sendPreset(preset)"
                                     >
@@ -245,7 +510,7 @@
                                     Emoji
                                     <input
                                         v-model="presetEmoji"
-                                        placeholder="🚗"
+                                        placeholder="Type emoji here:"
                                         autocomplete="off"
                                     />
                                 </label>
@@ -255,7 +520,7 @@
                                     <textarea
                                         v-model="presetMessage"
                                         rows="3"
-                                        placeholder="On my way!"
+                                        placeholder="Type your message here:"
                                     ></textarea>
                                 </label>
 
@@ -291,6 +556,7 @@
 
                         <form class="send-wrap" @submit.prevent="sendMessage">
                             <button class="plus-btn" type="button">⊕</button>
+
                             <input v-model="myMessage" placeholder="Type a message" />
 
                             <button class="pill" type="submit" :disabled="isSending">
@@ -321,11 +587,19 @@
             </div>
         </template>
         <template id="message-bubble-template">
-            <div class="message-bubble-row" :class="{ own: own }">
+           <div
+                class="message-bubble-row"
+                :class="{ own: own, 'message-whoosh': whooshing }"
+            >
                 <div class="message-bubble-shell" :class="{ own: own, incoming: !own }">
                     <div class="message-meta">
                         <span class="message-author">
-                            {{ own ? "You" : (message.actor || "Unknown user") }}
+                            <span v-if="own">You</span>
+                            <actor-handle
+                                v-else-if="message.actor"
+                                :actor="message.actor"
+                            ></actor-handle>
+                            <span v-else>Unknown user</span>
                         </span>
                         <span class="message-time">{{ formattedTime }}</span>
                     </div>
