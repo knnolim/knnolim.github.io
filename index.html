@@ -26,32 +26,162 @@
                 <!-- HOME ROUTE: ?page=home -->
                 <section v-if="currentRoute === 'home'" class="screen">
                     <nav class="top-nav">
-                        <button class="nav-link active-nav" @click="goHome">Home</button>
-                        <button class="nav-link" @click="goLogin">Login</button>
+                        <div class="nav-left">
+                            <button
+                                v-if="isLoggedIn"
+                                class="settings-icon-btn"
+                                type="button"
+                                @click="openSettings"
+                                aria-label="Open settings"
+                            >
+                                ⚙️
+                            </button>
+                        </div>
 
-                        <span v-if="isFinishingLogin" class="signed-in-pill">
-                            Finishing login...
-                        </span>
+                        <div class="nav-center">
+                            <button class="nav-link active-nav" @click="goHome">Home</button>
+                            <button class="nav-link" @click="goLogin">Login</button>
 
-                        <span v-else-if="isLoggedIn" class="signed-in-pill">
-                            Signed in as <actor-handle :actor="activeActor"></actor-handle>
-                        </span>
+                            <span v-if="isFinishingLogin" class="signed-in-pill">
+                                Finishing login...
+                            </span>
 
-                        <span v-else-if="session === undefined" class="signed-in-pill">
-                            Checking login...
-                        </span>
+                            <span v-else-if="isLoggedIn" class="signed-in-pill">
+                                Signed in as {{ myDisplayName }}
+                            </span>
 
-                        <span v-else class="signed-in-pill">
-                            Not signed in
-                        </span>
+                            <span v-else-if="session === undefined" class="signed-in-pill">
+                                Checking login...
+                            </span>
+
+                            <span v-else class="signed-in-pill">
+                                Not signed in
+                            </span>
+                        </div>
+
+                        <div class="nav-right"></div>
                     </nav>
+                    <div
+                        v-if="isSettingsOpen"
+                        class="settings-backdrop"
+                        @click.self="closeSettings"
+                    >
+                        <div class="settings-panel">
+                            <div class="settings-header">
+                                <button class="preset-icon-btn" type="button" @click="closeSettings">
+                                    ←
+                                </button>
+
+                                <h2>Settings</h2>
+
+                                <span></span>
+                            </div>
+
+                            <div class="settings-profile-preview">
+                                <graffiti-get-media
+                                    v-if="profilePhotoIsMediaDraft"
+                                    :url="profilePhotoDraft"
+                                    :accept="{ types: ['image/*'] }"
+                                >
+                                    <template #default="{ media }">
+                                        <img
+                                            v-if="media && media.dataUrl"
+                                            :src="media.dataUrl"
+                                            alt="Profile preview"
+                                        />
+
+                                        <img
+                                            v-else
+                                            :src="DEFAULT_PROFILE_PHOTO_URL"
+                                            alt="Profile preview"
+                                        />
+                                    </template>
+                                </graffiti-get-media>
+
+                                <img
+                                    v-else
+                                    :src="profilePhotoDraft || DEFAULT_PROFILE_PHOTO_URL"
+                                    alt="Profile preview"
+                                />
+                            </div>
+
+                            <p v-if="statusMessage" class="status-message settings-status">
+                                {{ statusMessage }}
+                            </p>
+
+                            <form class="settings-card" @submit.prevent="saveProfileSettings">
+                                <div class="settings-line settings-copy-line">
+                                    <span>Graffiti username:</span>
+
+                                    <input
+                                        :value="myGraffitiUsername || 'Loading...'"
+                                        type="text"
+                                        readonly
+                                    />
+
+                                    <button
+                                        class="settings-copy-btn"
+                                        type="button"
+                                        :disabled="!myGraffitiUsername"
+                                        @click="copyGraffitiUsername"
+                                    >
+                                        Copy
+                                    </button>
+                                </div>
+
+                                <label class="settings-line" for="profile-name-input">
+                                    <span>Display name:</span>
+
+                                    <input
+                                        id="profile-name-input"
+                                        v-model="profileNameDraft"
+                                        type="text"
+                                        placeholder="Username"
+                                    />
+                                </label>
+
+                                <label class="settings-line" for="profile-photo-input">
+                                    <span>Profile photo:</span>
+
+                                    <input
+                                        id="profile-photo-input"
+                                        type="file"
+                                        accept="image/*"
+                                        @change="handleProfilePhotoSelect"
+                                    />
+                                </label>
+
+                                <button class="settings-save-btn" type="submit">
+                                    Save Profile
+                                </button>
+                            </form>
+                        </div>
+                    </div>
 
                     <div v-if="isLoggedIn" class="utility-row">
                         <input v-model="newChatTitle" placeholder="Chat title" />
                         <button class="pill" @click="newChat">Create</button>
+
+                        <!-- <button
+                            class="pill chat-edit-toggle"
+                            type="button"
+                            @click="toggleChatEditMode"
+                        >
+                            {{ isEditingChats ? "Done" : "Edit" }}
+                        </button> -->
+                        <button
+                            v-if="isLoggedIn"
+                            class="chat-trash-toggle"
+                            :class="{ active: isEditingChats }"
+                            type="button"
+                            @click="toggleChatEditMode"
+                            :aria-label="isEditingChats ? 'Done deleting chats' : 'Delete chats'"
+                        >
+                            {{ isEditingChats ? "✅" : "🗑️" }}
+                        </button>
                     </div>
 
-                    <p v-if="statusMessage" class="status-message">
+                    <p v-if="statusMessage && !isAnyChatModalOpen" class="status-message">
                         {{ statusMessage }}
                     </p>
 
@@ -69,11 +199,14 @@
 
                     <div v-else class="chat-grid">
                         <chat-card
-                            v-for="(chat, idx) in sortedChats"
+                            v-for="chat in sortedChats"
                             :key="chat.url"
                             :chat="chat"
-                            :show-image="idx === 0"
+                            :show-image="true"
+                            :editing="isEditingChats"
+                            :deleting="isDeletingChat.has(chat.value.channel)"
                             @open-chat="openChat"
+                            @delete-chat="deleteChatFromHome"
                         ></chat-card>
                     </div>
                 </section>
@@ -133,12 +266,38 @@
                         </button>
 
                         <div class="title-wrap">
-                            <div class="chat-center">
+                            <button
+                                class="chat-center chat-logo-button"
+                                type="button"
+                                @click="openGroupDetails"
+                                aria-label="Open group details"
+                            >
+                                <graffiti-get-media
+                                    v-if="isGroupPhotoMedia(activeChat)"
+                                    :url="activeChat.value.icon"
+                                    :accept="{ types: ['image/*'] }"
+                                >
+                                    <template #default="{ media }">
+                                        <img
+                                            v-if="media && media.dataUrl"
+                                            :src="media.dataUrl"
+                                            alt="Group"
+                                        />
+
+                                        <img
+                                            v-else
+                                            :src="DEFAULT_GROUP_PHOTO_URL"
+                                            alt="Group"
+                                        />
+                                    </template>
+                                </graffiti-get-media>
+
                                 <img
-                                    src="https://images.unsplash.com/photo-1511632765486-a01980e01a18?w=160&h=160&fit=crop"
+                                    v-else
+                                    :src="getChatPhotoUrl(activeChat)"
                                     alt="Group"
                                 />
-                            </div>
+                            </button>
 
                             <button class="statuses-button" type="button" @click="openStatuses">
                                 Statuses {{ myCurrentStatus }}
@@ -152,11 +311,11 @@
                         </button>
                     </div>
 
-                    <p v-if="statusMessage" class="status-message">
+                    <p v-if="statusMessage && !isAnyChatModalOpen" class="status-message">
                         {{ statusMessage }}
                     </p>
 
-                    <div class="utility-row">
+                    <!-- <div class="utility-row">
                         <input v-model="actorToAdd" placeholder="Username" />
                         <button class="pill" @click="addToChat">Add Person</button>
                     </div>
@@ -169,7 +328,7 @@
                                 <actor-handle :actor="member"></actor-handle>
                             </li>
                         </ul>
-                    </div>
+                    </div> -->
 
                     <div
                         class="messages"
@@ -189,6 +348,220 @@
                             @delete-message="deleteMessage(message)"
                         ></message-bubble>
                     </div>
+                    <div
+                        v-if="isMessageMediaPreviewOpen"
+                        class="media-preview-backdrop"
+                        @click.self="cancelMessageMediaPreview"
+                    >
+                        <div class="media-preview-panel">
+                            <div class="media-preview-header">
+                                <button
+                                    class="preset-icon-btn"
+                                    type="button"
+                                    @click="cancelMessageMediaPreview"
+                                >
+                                    ←
+                                </button>
+
+                                <h2>Preview</h2>
+
+                                <span></span>
+                            </div>
+
+                            <div class="media-preview-content">
+                                <img
+                                    v-if="pendingMessageMediaIsImage"
+                                    :src="pendingMessageMediaPreviewUrl"
+                                    alt="Selected image preview"
+                                    class="media-preview-image"
+                                />
+
+                                <video
+                                    v-else-if="pendingMessageMediaIsVideo"
+                                    :src="pendingMessageMediaPreviewUrl"
+                                    class="media-preview-video"
+                                    controls
+                                    playsinline
+                                ></video>
+                            </div>
+
+                            <input
+                                v-model="myMessage"
+                                class="media-preview-caption"
+                                type="text"
+                                placeholder="Add a caption"
+                            />
+
+                            <div class="media-preview-actions">
+                                <button
+                                    class="media-preview-btn media-preview-cancel"
+                                    type="button"
+                                    @click="cancelMessageMediaPreview"
+                                >
+                                    Cancel
+                                </button>
+
+                                <button
+                                    class="media-preview-btn"
+                                    type="button"
+                                    :disabled="isSending"
+                                    @click="confirmSendMessageMedia"
+                                >
+                                    {{ isSending ? "Sending..." : "Send" }}
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                    <div
+                        v-if="isGroupDetailsOpen"
+                        class="statuses-backdrop"
+                        @click.self="closeGroupDetails"
+                    >
+                        <div class="group-details-panel">
+                            <div class="statuses-header">
+                                <button class="preset-icon-btn" type="button" @click="closeGroupDetails">
+                                    ←
+                                </button>
+
+                                <h2>Group Details</h2>
+
+                                <span></span>
+                            </div>
+
+                            <div class="group-photo-preview">
+                                <graffiti-get-media
+                                    v-if="groupChatPhotoIsMediaDraft"
+                                    :url="groupChatPhotoDraft"
+                                    :accept="{ types: ['image/*'] }"
+                                >
+                                    <template #default="{ media }">
+                                        <img
+                                            v-if="media && media.dataUrl"
+                                            :src="media.dataUrl"
+                                            alt="Group photo preview"
+                                        />
+
+                                        <img
+                                            v-else
+                                            :src="DEFAULT_GROUP_PHOTO_URL"
+                                            alt="Group photo preview"
+                                        />
+                                    </template>
+                                </graffiti-get-media>
+
+                                <img
+                                    v-else
+                                    :src="groupChatPhotoDraft || DEFAULT_GROUP_PHOTO_URL"
+                                    alt="Group photo preview"
+                                />
+                            </div>
+
+                            <p v-if="statusMessage" class="status-message group-details-status">
+                                {{ statusMessage }}
+                            </p>
+
+                            <div class="group-details-card">
+                                <form class="group-details-line" @submit.prevent="renameGroupChat">
+                                    <label for="group-name-input">Group name:</label>
+
+                                    <input
+                                        id="group-name-input"
+                                        v-model="groupChatTitleDraft"
+                                        type="text"
+                                        placeholder="Group name"
+                                    />
+
+                                    <button class="group-details-action-btn" type="submit">
+                                        Save
+                                    </button>
+                                </form>
+
+                                <form class="group-details-line" @submit.prevent="updateGroupChatPhoto">
+                                    <label for="group-photo-input">Group photo:</label>
+
+                                    <input
+                                        id="group-photo-input"
+                                        type="file"
+                                        accept="image/*"
+                                        @change="handleGroupPhotoSelect"
+                                    />
+
+                                    <button class="group-details-action-btn" type="submit">
+                                        Upload
+                                    </button>
+                                </form>
+
+                                <form class="group-details-line" @submit.prevent="addToChat">
+                                    <label for="add-person-input">Add person:</label>
+
+                                    <input
+                                        id="add-person-input"
+                                        v-model="actorToAdd"
+                                        type="text"
+                                        placeholder="Username"
+                                    />
+
+                                    <button class="group-details-action-btn" type="submit">
+                                        Add
+                                    </button>
+                                </form>
+                            </div>
+
+                            <div class="group-details-card members-card">
+                                <div class="group-details-card-title">Members</div>
+
+                                <div class="group-members-grid">
+                                    <div
+                                        v-for="member in activeChatMembers"
+                                        :key="member"
+                                        class="group-member-tile"
+                                    >
+                                        <div class="group-member-photo">
+                                            <graffiti-get-media
+                                                v-if="isMemberProfilePhotoMedia(member)"
+                                                :url="getMemberProfilePhotoUrl(member)"
+                                                :accept="{ types: ['image/*'] }"
+                                            >
+                                                <template #default="{ media }">
+                                                    <img
+                                                        v-if="media && media.dataUrl"
+                                                        :src="media.dataUrl"
+                                                        alt="Member profile photo"
+                                                    />
+
+                                                    <img
+                                                        v-else
+                                                        :src="DEFAULT_PROFILE_PHOTO_URL"
+                                                        alt="Member profile placeholder"
+                                                    />
+                                                </template>
+                                            </graffiti-get-media>
+
+                                            <img
+                                                v-else
+                                                :src="getMemberProfilePhotoUrl(member)"
+                                                alt="Member profile photo"
+                                            />
+                                        </div>
+
+                                        <div class="group-member-name">
+                                            <actor-handle :actor="member"></actor-handle>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="group-details-danger-zone">
+                                    <button
+                                        class="group-leave-btn"
+                                        type="button"
+                                        :disabled="isLeavingChat"
+                                        @click="leaveGroupChat"
+                                    >
+                                        {{ isLeavingChat ? "Leaving..." : "Leave Group Chat" }}
+                                    </button>
+                            </div>
+                        </div>
+                    </div>
                     
                     <div
                         v-if="isCalendarOpen"
@@ -205,6 +578,10 @@
 
                                 <span></span>
                             </div>
+
+                            <p v-if="statusMessage" class="status-message modal-status-message">
+                                {{ statusMessage }}
+                            </p>
 
                             <button
                                 class="calendar-graphic calendar-button"
@@ -238,7 +615,7 @@
                             </button>
 
                             <button class="rsvp-count-pill" type="button" @click="openRsvpEvents">
-                                RSVP’d events:
+                                RSVP’d events
                             </button>
 
                             <div v-if="sortedEventObjects.length" class="event-preview-list">
@@ -299,6 +676,10 @@
 
                                 <span></span>
                             </div>
+
+                            <p v-if="statusMessage" class="status-message modal-status-message">
+                                {{ statusMessage }}
+                            </p>
 
                             <div class="my-status-editor">
                                 <div class="my-status-title">
@@ -369,6 +750,10 @@
                                 <span></span>
                             </div>
 
+                            <p v-if="statusMessage" class="status-message modal-status-message">
+                                {{ statusMessage }}
+                            </p>
+
                             <div v-if="myRsvpedEvents.length" class="rsvp-event-list">
                                 <div
                                     v-for="event in myRsvpedEvents"
@@ -405,28 +790,77 @@
                         <form class="event-panel schedule-panel" @submit.prevent="scheduleEvent">
                             <h2>Schedule</h2>
 
-                            <label class="schedule-field">
-                                <span>Date:</span>
-                                <input v-model="eventDate" type="date" />
-                            </label>
+                            <p v-if="statusMessage" class="status-message modal-status-message">
+                                {{ statusMessage }}
+                            </p>
 
-                            <label class="schedule-field">
-                                <span>Time:</span>
-                                <input v-model="eventTime" type="time" />
-                            </label>
+                            <div class="schedule-field">
+                                <label for="event-date-input">Date:</label>
+                                <input
+                                    id="event-date-input"
+                                    v-model="eventDate"
+                                    type="date"
+                                    @click="openNativePicker"
+                                />
+                            </div>
 
-                            <label class="schedule-field">
-                                <span>Visibility:</span>
-                                <select v-model="eventVisibility">
+                            <div class="schedule-field">
+                                <label for="event-time-input">Time:</label>
+                                <input
+                                    id="event-time-input"
+                                    v-model="eventTime"
+                                    type="time"
+                                    @click="openNativePicker"
+                                />
+                            </div>
+
+                            <div class="schedule-field">
+                                <label for="event-visibility-input">Visibility:</label>
+                                <select
+                                    id="event-visibility-input"
+                                    v-model="eventVisibility"
+                                    @click="openNativePicker"
+                                >
                                     <option value="chat">Everyone in chat</option>
                                     <option value="private">Only me</option>
                                 </select>
-                            </label>
+                            </div>
 
-                            <label class="schedule-field">
-                                <span>Title:</span>
-                                <input v-model="eventTitle" type="text" />
-                            </label>
+                            <div class="schedule-field">
+                                <label for="event-repeat-input">Repeat:</label>
+                                <select
+                                    id="event-repeat-input"
+                                    v-model="eventRepeat"
+                                    @click="openNativePicker"
+                                >
+                                    <option value="none">Does not repeat</option>
+                                    <option value="daily">Daily</option>
+                                    <option value="weekly">Weekly</option>
+                                    <option value="biweekly">Every 2 weeks</option>
+                                </select>
+                            </div>
+
+                            <div
+                                v-if="eventRepeat !== 'none'"
+                                class="schedule-field"
+                            >
+                                <label for="event-repeat-until-input">Until:</label>
+                                <input
+                                    id="event-repeat-until-input"
+                                    v-model="eventRepeatUntil"
+                                    type="date"
+                                    @click="openNativePicker"
+                                />
+                            </div>
+
+                            <div class="schedule-field">
+                                <label for="event-title-input">Title:</label>
+                                <input
+                                    id="event-title-input"
+                                    v-model="eventTitle"
+                                    type="text"
+                                />
+                            </div>
 
                             <div class="schedule-actions">
                                 <button type="button" class="schedule-action-btn" @click="cancelScheduleEvent">
@@ -555,7 +989,22 @@
                         </button>
 
                         <form class="send-wrap" @submit.prevent="sendMessage">
-                            <button class="plus-btn" type="button">⊕</button>
+                            <button
+                                class="plus-btn"
+                                type="button"
+                                @click="openMessageMediaPicker"
+                                aria-label="Add image or video"
+                            >
+                                ⊕
+                            </button>
+
+                            <input
+                                ref="messageMediaInput"
+                                class="message-media-input"
+                                type="file"
+                                accept="image/*,video/*"
+                                @change="sendSelectedMessageMedia"
+                            />
 
                             <input v-model="myMessage" placeholder="Type a message" />
 
@@ -604,8 +1053,46 @@
                         <span class="message-time">{{ formattedTime }}</span>
                     </div>
 
-                    <div class="message-content">
+                    <div v-if="message.value.content" class="message-content">
                         {{ message.value.content }}
+                    </div>
+
+                    <div v-if="message.value.mediaUrl" class="message-media">
+                        <graffiti-get-media
+                            :url="message.value.mediaUrl"
+                            :accept="{ types: ['image/*', 'video/*'] }"
+                        >
+                            <template #default="{ media }">
+                                <img
+                                    v-if="isImageMessage && media && media.dataUrl"
+                                    :src="media.dataUrl"
+                                    :alt="message.value.mediaName || 'Shared image'"
+                                    class="message-media-image"
+                                />
+
+                                <video
+                                    v-else-if="isVideoMessage && media && media.dataUrl"
+                                    :src="media.dataUrl"
+                                    class="message-media-video"
+                                    controls
+                                    playsinline
+                                ></video>
+
+                                <a
+                                    v-else-if="media && media.dataUrl"
+                                    :href="media.dataUrl"
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    class="message-media-link"
+                                >
+                                    Open attachment
+                                </a>
+
+                                <span v-else class="message-media-loading">
+                                    Loading attachment...
+                                </span>
+                            </template>
+                        </graffiti-get-media>
                     </div>
 
                     <div v-if="own" class="message-actions">
@@ -620,26 +1107,65 @@
             </div>
         </template>
         <template id="chat-card-template">
-            <button class="chat-card" @click="$emit('open-chat', chat)">
-                <div class="chat-icon">
-                    <div
-                        class="petal"
-                        v-for="petalIndex in 8"
-                        :key="petalIndex"
-                        :style="{ '--i': petalIndex - 1 }"
-                    ></div>
+            <div
+                class="chat-card-wrap"
+                :class="{ shaking: editing }"
+            >
+                <button
+                    class="chat-card"
+                    type="button"
+                    @click="editing ? $emit('delete-chat', chat) : $emit('open-chat', chat)"
+                >
+                    <div class="chat-icon">
+                        <div
+                            class="petal"
+                            v-for="petalIndex in 8"
+                            :key="petalIndex"
+                            :style="{ '--i': petalIndex - 1 }"
+                        ></div>
 
-                    <div class="chat-center">
-                        <img
-                            v-if="showImage"
-                            src="https://images.unsplash.com/photo-1511632765486-a01980e01a18?w=160&h=160&fit=crop"
-                            alt="Group"
-                        />
+                        <div class="chat-center">
+                            <graffiti-get-media
+                                v-if="showImage && chatPhotoIsMedia"
+                                :url="chatPhotoUrl"
+                                :accept="{ types: ['image/*'] }"
+                            >
+                                <template #default="{ media }">
+                                    <img
+                                        v-if="media && media.dataUrl"
+                                        :src="media.dataUrl"
+                                        alt="Group"
+                                    />
+
+                                    <img
+                                        v-else
+                                        :src="DEFAULT_GROUP_PHOTO_URL_FOR_CARD"
+                                        alt="Group"
+                                    />
+                                </template>
+                            </graffiti-get-media>
+
+                            <img
+                                v-else-if="showImage"
+                                :src="chatPhotoUrl"
+                                alt="Group"
+                            />
+                        </div>
                     </div>
-                </div>
 
-                <div class="chat-label">{{ chat.value.title }}</div>
-            </button>
+                    <div class="chat-label">{{ chat.value.title }}</div>
+                </button>
+
+                <!-- <button
+                    v-if="editing"
+                    class="chat-delete-btn"
+                    type="button"
+                    :disabled="deleting"
+                    @click.stop="$emit('delete-chat', chat)"
+                >
+                    {{ deleting ? "..." : "🗑️" }}
+                </button> -->
+            </div>
         </template>
     </body>
 </html>

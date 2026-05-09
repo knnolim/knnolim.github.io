@@ -13,6 +13,7 @@ import { GraffitiDecentralized } from "@graffiti-garden/implementation-decentral
 
 import {
   GraffitiPlugin,
+  // GraffitiGetMedia,
   useGraffiti,
   useGraffitiSession,
   useGraffitiDiscover,
@@ -24,12 +25,19 @@ function setup() {
   const session = useGraffitiSession();
 
   const CHAT_DIRECTORY_CHANNEL = "group-chats-directory";
+  const DEFAULT_GROUP_PHOTO_URL =
+  "https://placehold.co/160x160?text=Group";
 
   const newChatTitle = ref("");
   const myMessage = ref("");
   const actorToAdd = ref("");
   const statusMessage = ref("");
   const messagesEl = ref(null);
+  const messageMediaInput = ref(null);
+  const pendingMessageMediaFile = ref(null);
+  const pendingMessageMediaPreviewUrl = ref("");
+  const pendingMessageMediaType = ref("");
+  const isMessageMediaPreviewOpen = ref(false);
 
   const isPresetMenuOpen = ref(false);
   const isPresetEditorOpen = ref(false);
@@ -40,15 +48,21 @@ function setup() {
   const presetMessage = ref("");
   const presets = ref([]);
 
-  const currentPath = ref("/home");
+  const currentPath = ref("/login");
   const activeChatChannel = ref(null);
 
   const urlUsername = ref("");
   const isFinishingLogin = ref(false);
+  const shouldRedirectHomeAfterLogin = ref(false);
 
   const localChatObjects = ref([]);
   const localMessageObjects = ref([]);
   const localAddObjects = ref([]);
+
+  const localDeletedChatObjects = ref([]);
+  const isEditingChats = ref(false);
+  const isDeletingChat = ref(new Set());
+  const isLeavingChat = ref(false);
 
   const isCalendarOpen = ref(false);
   const isRsvpEventsOpen = ref(false);
@@ -58,6 +72,8 @@ function setup() {
   const eventDate = ref("");
   const eventTime = ref("");
   const eventVisibility = ref("chat");
+  const eventRepeat = ref("none");
+  const eventRepeatUntil = ref("");
 
   const localEventObjects = ref([]);
   const localRsvpObjects = ref([]);
@@ -68,6 +84,22 @@ function setup() {
 
   const localStatusObjects = ref([]);
 
+  const isGroupDetailsOpen = ref(false);
+  const groupChatTitleDraft = ref("");
+  const groupChatPhotoDraft = ref("");
+  const groupChatPhotoIsMediaDraft = ref(false);
+  const selectedGroupPhotoFile = ref(null);
+
+  const DEFAULT_PROFILE_PHOTO_URL =
+  "https://placehold.co/160x160?text=You";
+
+  const isSettingsOpen = ref(false);
+  const profileNameDraft = ref("");
+  const profilePhotoDraft = ref("");
+  const profilePhotoIsMediaDraft = ref(false);
+  const selectedProfilePhotoFile = ref(null);
+  const localProfileObjects = ref([]);
+
   function uniqueActors(actors) {
     return [...new Set((actors || []).filter(Boolean))];
   }
@@ -76,10 +108,26 @@ function setup() {
     if (!chat) return [];
 
     const members = new Set(chat.value.members || []);
+    const chatPublished = chat.value.published || 0;
 
-    for (const addObj of allDirectoryAddObjects.value) {
-      if (addObj.value.target === chat.value.channel) {
-        members.add(addObj.value.object);
+    const membershipEvents = allDirectoryAddObjects.value
+      .filter((memberObj) => {
+        return (
+          memberObj.value.target === chat.value.channel &&
+          memberObj.value.published > chatPublished
+        );
+      })
+      .sort((a, b) => {
+        return a.value.published - b.value.published;
+      });
+
+    for (const memberObj of membershipEvents) {
+      if (memberObj.value.activity === "Add") {
+        members.add(memberObj.value.object);
+      }
+
+      if (memberObj.value.activity === "Remove") {
+        members.delete(memberObj.value.object);
       }
     }
 
@@ -89,6 +137,31 @@ function setup() {
   function currentUserCanSeeChat(chat) {
     if (!activeActor.value) return false;
     return getChatMembers(chat).includes(activeActor.value);
+  }
+
+  function getChatPhotoUrl(chat) {
+    return (
+      chat?.value?.icon ||
+      chat?.value?.photoUrl ||
+      DEFAULT_GROUP_PHOTO_URL
+    );
+  }
+
+  function isGroupPhotoMedia(chat) {
+    const icon = chat?.value?.icon || "";
+
+    return Boolean(
+      icon &&
+        (
+          chat?.value?.iconIsMedia ||
+          (!icon.startsWith("http://") && !icon.startsWith("https://"))
+        )
+    );
+  }
+
+  function handleGroupPhotoSelect(event) {
+    const file = event.target.files?.[0] || null;
+    selectedGroupPhotoFile.value = file;
   }
 
   function clearChatInputs() {
@@ -101,7 +174,7 @@ function setup() {
 
     urlUsername.value = url.searchParams.get("username") || "";
 
-    const page = url.searchParams.get("page") || "home";
+    const page = url.searchParams.get("page") || "login";
     const chatId = url.searchParams.get("chatId");
 
     if (!url.searchParams.has("page")) {
@@ -157,8 +230,36 @@ function setup() {
     return Boolean(session.value);
   });
 
+  watch(isLoggedIn, (loggedIn) => {
+    if (
+      loggedIn &&
+      shouldRedirectHomeAfterLogin.value &&
+      currentRoute.value === "login" &&
+      !isFinishingLogin.value
+    ) {
+      shouldRedirectHomeAfterLogin.value = false;
+      navigateToPage("home");
+    }
+  });
+
   const activeActor = computed(() => {
     return session.value?.actor || "";
+  });
+
+  const { handle: activeActorHandle } = useGraffitiActorToHandle(
+    () => activeActor.value
+  );
+
+  const myGraffitiUsername = computed(() => {
+    const handle = activeActorHandle.value || "";
+
+    if (!handle) return "";
+
+    const cleaned = handle.replace(/^@/, "");
+
+    return cleaned.endsWith(".graffiti.actor")
+      ? cleaned
+      : `${cleaned}.graffiti.actor`;
   });
 
   const canShowUserData = computed(() => {
@@ -241,14 +342,20 @@ function setup() {
 
   async function logIn() {
     statusMessage.value = "";
+    shouldRedirectHomeAfterLogin.value = true;
 
     try {
       await graffiti.login();
 
-      readRouteFromUrl();
-      await maybeFinishLoginFromUsername();
+      const didRedirect = await maybeFinishLoginFromUsername();
+
+      if (!didRedirect && session.value) {
+        shouldRedirectHomeAfterLogin.value = false;
+        navigateToPage("home");
+      }
     } catch (error) {
       console.error(error);
+      shouldRedirectHomeAfterLogin.value = false;
       statusMessage.value = "Login did not finish. Please try again.";
     }
   }
@@ -256,6 +363,7 @@ function setup() {
   async function logOut() {
     if (!session.value) return;
 
+    shouldRedirectHomeAfterLogin.value = false;
     statusMessage.value = "";
 
     try {
@@ -287,8 +395,6 @@ function setup() {
   }
 
   async function requireLogin(message) {
-    readRouteFromUrl();
-
     if (session.value === undefined || isFinishingLogin.value) {
       statusMessage.value =
         "Still checking your login status. Try again in a moment.";
@@ -330,6 +436,9 @@ function setup() {
               type: "array",
               items: { type: "string" },
             },
+            icon: { type: "string" },
+            iconIsMedia: { type: "boolean" },
+            photoUrl: { type: "string" },
             published: { type: "number" },
           },
         },
@@ -349,7 +458,7 @@ function setup() {
         value: {
           required: ["activity", "type", "object", "target", "published"],
           properties: {
-            activity: { const: "Add" },
+            activity: { enum: ["Add", "Remove"] },
             type: { const: "Member" },
             object: { type: "string" },
             target: { type: "string" },
@@ -388,6 +497,9 @@ function setup() {
             time: { type: "string" },
             visibility: { type: "string" },
             chatChannel: { type: "string" },
+            repeat: { type: "string" },
+            repeatUntil: { type: "string" },
+            originalEventUrl: { type: "string" },
             published: { type: "number" },
           },
         },
@@ -449,6 +561,10 @@ function setup() {
             type: { const: "Message" },
             content: { type: "string" },
             chatChannel: { type: "string" },
+            mediaUrl: { type: "string" },
+            mediaType: { type: "string" },
+            mediaName: { type: "string" },
+            mediaSize: { type: "number" },
             published: { type: "number" },
           },
         },
@@ -468,7 +584,7 @@ function setup() {
         value: {
           required: ["activity", "type", "object", "target", "published"],
           properties: {
-            activity: { const: "Add" },
+            activity: { enum: ["Add", "Remove"] },
             type: { const: "Member" },
             object: { type: "string" },
             target: { type: "string" },
@@ -510,6 +626,52 @@ function setup() {
     false
   );
 
+  const {
+    objects: profileObjects,
+    poll: pollProfiles,
+  } = useGraffitiDiscover(
+    () => (activeActor.value ? [activeActor.value] : []),
+    {
+      properties: {
+        value: {
+          required: ["type", "describes", "name", "published"],
+          properties: {
+            type: { const: "Profile" },
+            describes: { type: "string" },
+            name: { type: "string" },
+            icon: { type: "string" },
+            iconIsMedia: { type: "boolean" },
+            published: { type: "number" },
+          },
+        },
+      },
+    },
+    () => session.value,
+    false
+  );
+
+  const {
+    objects: deletedChatObjects,
+    poll: pollDeletedChats,
+  } = useGraffitiDiscover(
+    () => [CHAT_DIRECTORY_CHANNEL],
+    {
+      properties: {
+        value: {
+          required: ["activity", "type", "channel", "published"],
+          properties: {
+            activity: { const: "Delete" },
+            type: { const: "Chat" },
+            channel: { type: "string" },
+            published: { type: "number" },
+          },
+        },
+      },
+    },
+    () => session.value,
+    false
+  );
+
   function dedupeByUrl(objects) {
     const seen = new Set();
 
@@ -519,6 +681,46 @@ function setup() {
       return true;
     });
   }
+
+  const allProfileObjects = computed(() => {
+    return dedupeByUrl([...localProfileObjects.value, ...profileObjects.value]);
+  });
+
+  const myProfile = computed(() => {
+    if (!activeActor.value) return null;
+
+    const profiles = allProfileObjects.value
+      .filter((profile) => {
+        return profile.value.describes === activeActor.value;
+      })
+      .sort((a, b) => {
+        return b.value.published - a.value.published;
+      });
+
+    return profiles[0] || null;
+  });
+
+  const myDisplayName = computed(() => {
+    return (
+      myProfile.value?.value?.name ||
+      activeActor.value ||
+      "You"
+    );
+  });
+
+  const myProfilePhotoUrl = computed(() => {
+    return (
+      myProfile.value?.value?.icon ||
+      DEFAULT_PROFILE_PHOTO_URL
+    );
+  });
+
+  const myProfilePhotoIsMedia = computed(() => {
+    return Boolean(
+      myProfile.value?.value?.icon &&
+        myProfile.value?.value?.iconIsMedia
+    );
+  });
 
   function dedupeChatsByChannel(chats) {
     const newestByChannel = new Map();
@@ -536,7 +738,18 @@ function setup() {
   }
 
   const allChatObjects = computed(() => {
-    return dedupeChatsByChannel([...localChatObjects.value, ...chatObjects.value]);
+    const chats = dedupeChatsByChannel([
+      ...localChatObjects.value,
+      ...chatObjects.value,
+    ]);
+
+    return chats.filter((chat) => {
+      const deletedChat = latestDeletedChatByChannel.value.get(chat.value.channel);
+
+      if (!deletedChat) return true;
+
+      return deletedChat.value.published < chat.value.published;
+    });
   });
 
   const allMessageObjects = computed(() => {
@@ -590,13 +803,69 @@ function setup() {
     return dedupeByUrl([...localRsvpObjects.value, ...rsvpObjects.value]);
   });
 
+  function addDaysToDate(dateText, daysToAdd) {
+    const parsed = new Date(`${dateText}T00:00`);
+
+    if (Number.isNaN(parsed.getTime())) return dateText;
+
+    parsed.setDate(parsed.getDate() + daysToAdd);
+
+    const year = parsed.getFullYear();
+    const month = String(parsed.getMonth() + 1).padStart(2, "0");
+    const day = String(parsed.getDate()).padStart(2, "0");
+
+    return `${year}-${month}-${day}`;
+  }
+
+  function repeatStepDays(repeat) {
+    if (repeat === "daily") return 1;
+    if (repeat === "weekly") return 7;
+    if (repeat === "biweekly") return 14;
+    return 0;
+  }
+
+  function expandRepeatingEvent(event) {
+    const repeat = event.value.repeat || "none";
+    const stepDays = repeatStepDays(repeat);
+
+    if (!stepDays) return [event];
+
+    const startDate = event.value.date;
+    const repeatUntil = event.value.repeatUntil || startDate;
+
+    const expanded = [];
+    let currentDate = startDate;
+    let occurrenceIndex = 0;
+
+    while (currentDate <= repeatUntil && occurrenceIndex < 100) {
+      expanded.push({
+        ...event,
+        url: `${event.url}#repeat-${occurrenceIndex}`,
+        originalUrl: event.url,
+        value: {
+          ...event.value,
+          date: currentDate,
+          originalEventUrl: event.url,
+          occurrenceIndex,
+        },
+      });
+
+      currentDate = addDaysToDate(currentDate, stepDays);
+      occurrenceIndex += 1;
+    }
+
+    return expanded;
+  }
+
   const visibleEventObjects = computed(() => {
     if (!canShowUserData.value) return [];
     if (!activeChat.value) return [];
 
-    return allEventObjects.value.filter((event) => {
-      return event.value.chatChannel === activeChatChannel.value;
-    });
+    return allEventObjects.value
+      .filter((event) => {
+        return event.value.chatChannel === activeChatChannel.value;
+      })
+      .flatMap((event) => expandRepeatingEvent(event));
   });
 
   function eventStartMs(event) {
@@ -793,6 +1062,106 @@ function setup() {
     return latestStatus?.value?.status || "😴";
   });
 
+  const allDeletedChatObjects = computed(() => {
+    return dedupeByUrl([
+      ...localDeletedChatObjects.value,
+      ...deletedChatObjects.value,
+    ]);
+  });
+
+  const latestDeletedChatByChannel = computed(() => {
+    const latest = new Map();
+
+    for (const deletedChat of allDeletedChatObjects.value) {
+      const channel = deletedChat.value.channel;
+      const existing = latest.get(channel);
+
+      if (!existing || deletedChat.value.published > existing.value.published) {
+        latest.set(channel, deletedChat);
+      }
+    }
+
+    return latest;
+  });
+
+  const {
+    objects: memberProfileObjects,
+    poll: pollMemberProfiles,
+  } = useGraffitiDiscover(
+    () => activeChatMembers.value,
+    {
+      properties: {
+        value: {
+          required: ["type", "describes", "name", "published"],
+          properties: {
+            type: { const: "Profile" },
+            describes: { type: "string" },
+            name: { type: "string" },
+            icon: { type: "string" },
+            iconIsMedia: { type: "boolean" },
+            published: { type: "number" },
+          },
+        },
+      },
+    },
+    () => session.value,
+    false
+  );
+
+  const allMemberProfileObjects = computed(() => {
+    return dedupeByUrl([
+      ...localProfileObjects.value,
+      ...memberProfileObjects.value,
+    ]);
+  });
+
+  const latestProfileByActor = computed(() => {
+    const latest = new Map();
+
+    for (const profile of allMemberProfileObjects.value) {
+      const actor = profile.value.describes;
+      const existing = latest.get(actor);
+
+      if (!existing || profile.value.published > existing.value.published) {
+        latest.set(actor, profile);
+      }
+    }
+
+    return latest;
+  });
+
+  const isAnyChatModalOpen = computed(() => {
+    return (
+      isCalendarOpen.value ||
+      isRsvpEventsOpen.value ||
+      isScheduleEventOpen.value ||
+      isStatusesOpen.value ||
+      isGroupDetailsOpen.value ||
+      isPresetMenuOpen.value ||
+      isMessageMediaPreviewOpen.value
+    );
+  });
+
+  function getMemberProfile(actor) {
+    return latestProfileByActor.value.get(actor) || null;
+  }
+
+  function getMemberProfilePhotoUrl(actor) {
+    return (
+      getMemberProfile(actor)?.value?.icon ||
+      DEFAULT_PROFILE_PHOTO_URL
+    );
+  }
+
+  function isMemberProfilePhotoMedia(actor) {
+    const profile = getMemberProfile(actor);
+
+    return Boolean(
+      profile?.value?.icon &&
+        profile?.value?.iconIsMedia
+    );
+  }
+
   async function newChat() {
     if (!(await requireLogin("Please log in before creating a chat."))) return;
     if (!newChatTitle.value.trim()) return;
@@ -812,6 +1181,7 @@ function setup() {
             title,
             channel: newChannel,
             members: [creator],
+            // icon: DEFAULT_GROUP_PHOTO_URL,
             published: Date.now(),
           },
           channels: [CHAT_DIRECTORY_CHANNEL],
@@ -839,6 +1209,166 @@ function setup() {
 
   function closeChat() {
     goHome();
+  }
+
+  function toggleChatEditMode() {
+    isEditingChats.value = !isEditingChats.value;
+  }
+
+  async function deleteChatFromHome(chat) {
+    if (!(await requireLogin("Please log in before deleting a chat."))) {
+      return;
+    }
+
+    if (!chat) return;
+
+    const channel = chat.value.channel;
+    const members = uniqueActors(getChatMembers(chat));
+
+    isDeletingChat.value.add(channel);
+    statusMessage.value = "Deleting chat...";
+
+    try {
+      const deletedChat = await graffiti.post(
+        {
+          value: {
+            activity: "Delete",
+            type: "Chat",
+            channel,
+            published: Date.now(),
+          },
+          channels: [CHAT_DIRECTORY_CHANNEL],
+          allowed: members.length ? members : [session.value.actor],
+        },
+        session.value
+      );
+
+      localDeletedChatObjects.value.push(deletedChat);
+
+      statusMessage.value = "";
+
+      await pollDeletedChats();
+      await pollChats();
+
+      if (activeChatChannel.value === channel) {
+        goHome();
+      }
+    } catch (error) {
+      console.error(error);
+      statusMessage.value = "Could not delete this chat.";
+    } finally {
+      isDeletingChat.value.delete(channel);
+    }
+  }
+
+  function openSettings() {
+    if (!session.value) {
+      statusMessage.value = "Please log in before opening settings.";
+      navigateToPage("login");
+      return;
+    }
+
+    profileNameDraft.value = myProfile.value?.value?.name || "";
+    profilePhotoDraft.value = myProfilePhotoUrl.value;
+    profilePhotoIsMediaDraft.value = myProfilePhotoIsMedia.value;
+    selectedProfilePhotoFile.value = null;
+    statusMessage.value = "";
+
+    isSettingsOpen.value = true;
+  }
+
+  function closeSettings() {
+    isSettingsOpen.value = false;
+    selectedProfilePhotoFile.value = null;
+    profileNameDraft.value = myProfile.value?.value?.name || "";
+    profilePhotoDraft.value = myProfilePhotoUrl.value;
+    profilePhotoIsMediaDraft.value = myProfilePhotoIsMedia.value;
+  }
+
+  async function copyGraffitiUsername() {
+    if (!myGraffitiUsername.value) return;
+
+    try {
+      await navigator.clipboard.writeText(myGraffitiUsername.value);
+      statusMessage.value = "Graffiti username copied.";
+    } catch (error) {
+      console.error(error);
+      statusMessage.value = "Could not copy username.";
+    }
+  }
+
+  function handleProfilePhotoSelect(event) {
+    const file = event.target.files?.[0] || null;
+    selectedProfilePhotoFile.value = file;
+  }
+
+  async function saveProfileSettings() {
+    if (!(await requireLogin("Please log in before editing your profile."))) {
+      return;
+    }
+
+    const nextName = profileNameDraft.value.trim();
+
+    if (!nextName) {
+      statusMessage.value = "Please enter a username.";
+      return;
+    }
+
+    statusMessage.value = "Saving profile...";
+
+    try {
+      let nextIcon = myProfile.value?.value?.icon || DEFAULT_PROFILE_PHOTO_URL;
+      let nextIconIsMedia = Boolean(myProfile.value?.value?.iconIsMedia);
+
+      if (selectedProfilePhotoFile.value) {
+        const uploadedMedia = await graffiti.postMedia(
+          {
+            data: selectedProfilePhotoFile.value,
+          },
+          session.value
+        );
+
+        nextIcon =
+          typeof uploadedMedia === "string"
+            ? uploadedMedia
+            : uploadedMedia?.url || uploadedMedia?.href || uploadedMedia?.dataUrl;
+
+        if (!nextIcon) {
+          throw new Error("No media URL returned from graffiti.postMedia.");
+        }
+
+        nextIconIsMedia = true;
+      }
+
+      const createdProfile = await graffiti.post(
+        {
+          channels: [session.value.actor],
+          value: {
+            type: "Profile",
+            describes: session.value.actor,
+            name: nextName,
+            icon: nextIcon,
+            iconIsMedia: nextIconIsMedia,
+            published: Date.now(),
+          },
+        },
+        session.value
+      );
+
+      localProfileObjects.value.push(createdProfile);
+
+      profilePhotoDraft.value = nextIcon;
+      profilePhotoIsMediaDraft.value = nextIconIsMedia;
+      selectedProfilePhotoFile.value = null;
+      statusMessage.value = "";
+
+      await pollProfiles();
+      await pollMemberProfiles();
+
+    } catch (error) {
+      console.error(error);
+      statusMessage.value = "Could not save your profile.";
+    }
   }
 
   const isSending = ref(false);
@@ -907,6 +1437,161 @@ function setup() {
 
     if (!sent) {
       myMessage.value = content;
+    }
+  }
+
+  function openMessageMediaPicker() {
+    if (messageMediaInput.value) {
+      messageMediaInput.value.value = "";
+      messageMediaInput.value.click();
+    }
+  }
+
+  function clearPendingMessageMedia() {
+    if (pendingMessageMediaPreviewUrl.value) {
+      URL.revokeObjectURL(pendingMessageMediaPreviewUrl.value);
+    }
+
+    pendingMessageMediaFile.value = null;
+    pendingMessageMediaPreviewUrl.value = "";
+    pendingMessageMediaType.value = "";
+  }
+
+  function cancelMessageMediaPreview() {
+    isMessageMediaPreviewOpen.value = false;
+    clearPendingMessageMedia();
+  }
+
+  async function confirmSendMessageMedia() {
+    if (!pendingMessageMediaFile.value) {
+      cancelMessageMediaPreview();
+      return;
+    }
+
+    const file = pendingMessageMediaFile.value;
+
+    isMessageMediaPreviewOpen.value = false;
+
+    const sent = await sendMediaMessage(file);
+
+    if (sent) {
+      clearPendingMessageMedia();
+    } else {
+      pendingMessageMediaFile.value = file;
+      pendingMessageMediaType.value = file.type;
+      pendingMessageMediaPreviewUrl.value = URL.createObjectURL(file);
+      isMessageMediaPreviewOpen.value = true;
+    }
+  }
+
+  const pendingMessageMediaIsImage = computed(() => {
+    return pendingMessageMediaType.value.startsWith("image/");
+  });
+
+  const pendingMessageMediaIsVideo = computed(() => {
+    return pendingMessageMediaType.value.startsWith("video/");
+  });
+
+  function sendSelectedMessageMedia(event) {
+    const file = event.target.files?.[0] || null;
+
+    if (!file) return;
+
+    if (!file.type.startsWith("image/") && !file.type.startsWith("video/")) {
+      statusMessage.value = "Please choose an image or video file.";
+      event.target.value = "";
+      return;
+    }
+
+    const maxMediaBytes = 25 * 1024 * 1024;
+
+    if (file.size > maxMediaBytes) {
+      statusMessage.value = "Media must be 25MB or smaller.";
+      event.target.value = "";
+      return;
+    }
+
+    clearPendingMessageMedia();
+
+    pendingMessageMediaFile.value = file;
+    pendingMessageMediaType.value = file.type;
+    pendingMessageMediaPreviewUrl.value = URL.createObjectURL(file);
+    isMessageMediaPreviewOpen.value = true;
+    statusMessage.value = "";
+
+    event.target.value = "";
+  }
+
+  async function sendMediaMessage(file) {
+    if (!(await requireLogin("Please log in before sending media."))) {
+      return false;
+    }
+
+    if (!activeChat.value) return false;
+
+    isSending.value = true;
+    statusMessage.value = "Uploading media...";
+
+    try {
+      const uploadedMedia = await graffiti.postMedia(
+        {
+          data: file,
+        },
+        session.value
+      );
+
+      const mediaUrl =
+        typeof uploadedMedia === "string"
+          ? uploadedMedia
+          : uploadedMedia?.url || uploadedMedia?.href || uploadedMedia?.dataUrl;
+
+      if (!mediaUrl) {
+        throw new Error("No media URL returned from graffiti.postMedia.");
+      }
+
+      const createdMessage = await graffiti.post(
+        {
+          value: {
+            activity: "Send",
+            type: "Message",
+            content: myMessage.value.trim(),
+            chatChannel: activeChat.value.value.channel,
+            mediaUrl,
+            mediaType: file.type,
+            mediaName: file.name,
+            mediaSize: file.size,
+            published: Date.now(),
+          },
+          channels: [activeChat.value.value.channel],
+          allowed: activeChatMembers.value,
+        },
+        session.value
+      );
+
+      localMessageObjects.value.push(createdMessage);
+
+      myMessage.value = "";
+      statusMessage.value = "";
+      whooshingMessageUrl.value = createdMessage.url;
+
+      window.setTimeout(() => {
+        if (whooshingMessageUrl.value === createdMessage.url) {
+          whooshingMessageUrl.value = "";
+        }
+      }, 650);
+
+      shouldStickToBottom.value = true;
+
+      await pollMessages();
+      await scrollToBottom({ force: true });
+
+      return true;
+    } catch (error) {
+      console.error(error);
+      statusMessage.value = "Could not send the media.";
+      return false;
+    } finally {
+      isSending.value = false;
     }
   }
 
@@ -1046,6 +1731,227 @@ function setup() {
     closePresetEditor();
   }
 
+  function openGroupDetails() {
+    if (!activeChat.value) return;
+
+    groupChatTitleDraft.value = activeChat.value.value.title || "";
+    groupChatPhotoDraft.value = getChatPhotoUrl(activeChat.value);
+    groupChatPhotoIsMediaDraft.value = isGroupPhotoMedia(activeChat.value);
+    selectedGroupPhotoFile.value = null;
+    actorToAdd.value = "";
+    statusMessage.value = "";
+
+    isGroupDetailsOpen.value = true;
+    isCalendarOpen.value = false;
+    isRsvpEventsOpen.value = false;
+    isScheduleEventOpen.value = false;
+    isStatusesOpen.value = false;
+    isPresetMenuOpen.value = false;
+
+    pollMemberProfiles();
+  }
+
+  function closeGroupDetails() {
+    isGroupDetailsOpen.value = false;
+    actorToAdd.value = "";
+    selectedGroupPhotoFile.value = null;
+    groupChatTitleDraft.value = activeChat.value?.value?.title || "";
+    groupChatPhotoDraft.value = getChatPhotoUrl(activeChat.value);
+    groupChatPhotoIsMediaDraft.value = isGroupPhotoMedia(activeChat.value);
+  }
+
+  async function leaveGroupChat() {
+    if (!(await requireLogin("Please log in before leaving this chat."))) {
+      return;
+    }
+
+    if (!activeChat.value || !activeActor.value) return;
+
+    const currentMembers = uniqueActors(activeChatMembers.value);
+    const remainingMembers = currentMembers.filter((member) => {
+      return member !== activeActor.value;
+    });
+
+    if (remainingMembers.length === currentMembers.length) {
+      statusMessage.value = "You are not a member of this chat.";
+      return;
+    }
+
+    isLeavingChat.value = true;
+    statusMessage.value = "Leaving group chat...";
+
+    try {
+      const now = Date.now();
+
+      const updatedChat = await graffiti.post(
+        {
+          value: {
+            activity: "Create",
+            type: "Chat",
+            title: activeChat.value.value.title,
+            channel: activeChat.value.value.channel,
+            members: remainingMembers,
+            icon: activeChat.value.value.icon,
+            iconIsMedia: Boolean(activeChat.value.value.iconIsMedia),
+            photoUrl: activeChat.value.value.photoUrl,
+            published: now,
+          },
+          channels: [CHAT_DIRECTORY_CHANNEL],
+          allowed: currentMembers,
+        },
+        session.value
+      );
+
+      const removedMember = await graffiti.post(
+        {
+          value: {
+            activity: "Remove",
+            type: "Member",
+            object: activeActor.value,
+            target: activeChat.value.value.channel,
+            published: now + 1,
+          },
+          channels: [
+            CHAT_DIRECTORY_CHANNEL,
+            activeChat.value.value.channel,
+          ],
+          allowed: currentMembers,
+        },
+        session.value
+      );
+
+      localChatObjects.value.push(updatedChat);
+      localAddObjects.value.push(removedMember);
+
+      isGroupDetailsOpen.value = false;
+      statusMessage.value = "";
+
+      await pollChats();
+      await pollDirectoryAdds();
+      await pollAdds();
+      await pollDeletedChats();
+
+      goHome();
+    } catch (error) {
+      console.error(error);
+      statusMessage.value = "Could not leave this chat.";
+    } finally {
+      isLeavingChat.value = false;
+    }
+  }
+
+  async function renameGroupChat() {
+    if (!(await requireLogin("Please log in before changing the group name."))) {
+      return;
+    }
+
+    if (!activeChat.value) return;
+
+    const nextTitle = groupChatTitleDraft.value.trim();
+
+    if (!nextTitle) {
+      statusMessage.value = "Please enter a group name.";
+      return;
+    }
+
+    const allowedActors = uniqueActors(activeChatMembers.value);
+
+    statusMessage.value = "Updating group name...";
+
+    try {
+      const updatedChat = await graffiti.post(
+        {
+          value: {
+            activity: "Create",
+            type: "Chat",
+            title: nextTitle,
+            channel: activeChat.value.value.channel,
+            members: allowedActors,
+            icon: activeChat.value.value.icon,
+            iconIsMedia: Boolean(activeChat.value.value.iconIsMedia),
+            published: Date.now(),
+          },
+          channels: [CHAT_DIRECTORY_CHANNEL],
+          allowed: allowedActors,
+        },
+        session.value
+      );
+
+      localChatObjects.value.push(updatedChat);
+      groupChatTitleDraft.value = nextTitle;
+      statusMessage.value = "";
+
+      await pollChats();
+    } catch (error) {
+      console.error(error);
+      statusMessage.value = "Could not update the group name.";
+    }
+  }
+
+  async function updateGroupChatPhoto() {
+    if (!(await requireLogin("Please log in before changing the group photo."))) {
+      return;
+    }
+
+    if (!activeChat.value) return;
+
+    if (!selectedGroupPhotoFile.value) {
+      statusMessage.value = "Please choose an image first.";
+      return;
+    }
+
+    statusMessage.value = "Uploading group photo...";
+
+    try {
+      const uploadedMedia = await graffiti.postMedia(
+        {
+          data: selectedGroupPhotoFile.value,
+        },
+        session.value
+      );
+
+      const pictureUrl =
+        typeof uploadedMedia === "string"
+          ? uploadedMedia
+          : uploadedMedia?.url || uploadedMedia?.href || uploadedMedia?.dataUrl;
+
+      if (!pictureUrl) {
+        throw new Error("No media URL returned from graffiti.postMedia.");
+      }
+
+      const allowedActors = uniqueActors(activeChatMembers.value);
+
+      const updatedChat = await graffiti.post(
+        {
+          value: {
+            activity: "Create",
+            type: "Chat",
+            title: activeChat.value.value.title,
+            channel: activeChat.value.value.channel,
+            members: allowedActors,
+            icon: pictureUrl,
+            iconIsMedia: true,
+            published: Date.now(),
+          },
+          channels: [CHAT_DIRECTORY_CHANNEL],
+          allowed: allowedActors,
+        },
+        session.value
+      );
+
+      localChatObjects.value.push(updatedChat);
+      groupChatPhotoDraft.value = pictureUrl;
+      groupChatPhotoIsMediaDraft.value = true;
+      selectedGroupPhotoFile.value = null;
+      statusMessage.value = "";
+
+      await pollChats();
+    } catch (error) {
+      console.error(error);
+      statusMessage.value = "Could not update the group photo.";
+    }
+  }
+
   async function addToChat() {
     if (!(await requireLogin("Please log in before adding someone to a chat.")))
       return;
@@ -1094,6 +2000,8 @@ function setup() {
             title: activeChat.value.value.title,
             channel: activeChat.value.value.channel,
             members: allowedActors,
+            icon: activeChat.value.value.icon,
+            iconIsMedia: Boolean(activeChat.value.value.iconIsMedia),
             published: Date.now(),
           },
           channels: [CHAT_DIRECTORY_CHANNEL],
@@ -1117,6 +2025,7 @@ function setup() {
   }
 
   function openCalendar() {
+    isGroupDetailsOpen.value = false;
     isCalendarOpen.value = true;
     isRsvpEventsOpen.value = false;
     isScheduleEventOpen.value = false;
@@ -1139,11 +2048,21 @@ function setup() {
     isCalendarOpen.value = true;
   }
 
+  function openNativePicker(event) {
+    const control = event.currentTarget;
+
+    if (control && typeof control.showPicker === "function") {
+      control.showPicker();
+    }
+  }
+
   function openScheduleEvent() {
     eventTitle.value = "";
     eventDate.value = "";
     eventTime.value = "";
     eventVisibility.value = "chat";
+    eventRepeat.value = "none";
+    eventRepeatUntil.value = "";
 
     isScheduleEventOpen.value = true;
     isCalendarOpen.value = false;
@@ -1194,9 +2113,21 @@ function setup() {
     const title = eventTitle.value.trim();
     const date = eventDate.value;
     const time = eventTime.value;
+    const repeat = eventRepeat.value;
+    const repeatUntil = eventRepeatUntil.value;
 
     if (!title || !date || !time) {
       statusMessage.value = "Please enter a title, date, and time.";
+      return;
+    }
+
+    if (repeat !== "none" && !repeatUntil) {
+      statusMessage.value = "Please choose when the repeating event ends.";
+      return;
+    }
+
+    if (repeat !== "none" && repeatUntil < date) {
+      statusMessage.value = "Repeat until date must be after the event date.";
       return;
     }
 
@@ -1218,6 +2149,8 @@ function setup() {
             time,
             visibility: eventVisibility.value,
             chatChannel: activeChat.value.value.channel,
+            repeat,
+            repeatUntil: repeat === "none" ? "" : repeatUntil,
             published: Date.now(),
           },
           channels: [activeChat.value.value.channel],
@@ -1232,6 +2165,8 @@ function setup() {
       eventDate.value = "";
       eventTime.value = "";
       eventVisibility.value = "chat";
+      eventRepeat.value = "none";
+      eventRepeatUntil.value = "";
 
       statusMessage.value = "";
 
@@ -1316,6 +2251,7 @@ function setup() {
   }
 
   function openStatuses() {
+    isGroupDetailsOpen.value = false;
     selectedStatusEmoji.value = myCurrentStatus.value || "😴";
     customStatusEmoji.value = "";
     isStatusesOpen.value = true;
@@ -1486,8 +2422,14 @@ function setup() {
     await scrollToBottom({ force: true });
   });
 
-  watch(session, async () => {
-    readRouteFromUrl();
+  watch(session, async (newSession) => {
+    if (shouldRedirectHomeAfterLogin.value && newSession) {
+      shouldRedirectHomeAfterLogin.value = false;
+      navigateToPage("home");
+    } else {
+      readRouteFromUrl();
+    }
+
     loadPresets();
     statusMessage.value = "";
 
@@ -1497,9 +2439,13 @@ function setup() {
     localEventObjects.value = [];
     localRsvpObjects.value = [];
     localStatusObjects.value = [];
+    localProfileObjects.value = [];
+    localDeletedChatObjects.value = [];
 
     await pollChats();
     await pollDirectoryAdds();
+    await pollProfiles();
+    await pollDeletedChats();
 
     if (activeChatChannel.value) {
       shouldStickToBottom.value = true;
@@ -1523,6 +2469,7 @@ function setup() {
 
     await pollChats();
     await pollDirectoryAdds();
+    await pollDeletedChats();
 
     if (activeChatChannel.value) {
       shouldStickToBottom.value = true;
@@ -1550,9 +2497,16 @@ function setup() {
 
     newChatTitle,
     myMessage,
+    messageMediaInput,
     actorToAdd,
     statusMessage,
     activeChatChannel,
+    pendingMessageMediaFile,
+    pendingMessageMediaPreviewUrl,
+    pendingMessageMediaType,
+    isMessageMediaPreviewOpen,
+    pendingMessageMediaIsImage,
+    pendingMessageMediaIsVideo,
 
     chatObjects: allChatObjects,
     sortedChats,
@@ -1575,6 +2529,11 @@ function setup() {
     deleteMessage,
     isOwnMessage,
     updateMessageStickiness,
+    openMessageMediaPicker,
+    sendSelectedMessageMedia,
+    sendMediaMessage,
+    cancelMessageMediaPreview,
+    confirmSendMessageMedia,
 
     isSending,
     whooshingMessageUrl,
@@ -1609,6 +2568,8 @@ function setup() {
     eventDate,
     eventTime,
     eventVisibility,
+    eventRepeat,
+    eventRepeatUntil,
 
     sortedEventObjects,
     myRsvpedEvents,
@@ -1641,6 +2602,62 @@ function setup() {
     openStatuses,
     closeStatuses,
     updateMyStatus,
+
+    isGroupDetailsOpen,
+    groupChatTitleDraft,
+    groupChatPhotoDraft,
+    groupChatPhotoIsMediaDraft,
+    
+    openGroupDetails,
+    closeGroupDetails,
+    renameGroupChat,
+
+    DEFAULT_GROUP_PHOTO_URL,
+    selectedGroupPhotoFile,
+    shouldRedirectHomeAfterLogin,
+
+    getChatPhotoUrl,
+    isGroupPhotoMedia,
+    handleGroupPhotoSelect,
+    updateGroupChatPhoto,
+
+    DEFAULT_PROFILE_PHOTO_URL,
+    isSettingsOpen,
+    profileNameDraft,
+    profilePhotoDraft,
+    profilePhotoIsMediaDraft,
+    selectedProfilePhotoFile,
+
+    myProfile,
+    myDisplayName,
+    myProfilePhotoUrl,
+    myProfilePhotoIsMedia,
+
+    openSettings,
+    closeSettings,
+    handleProfilePhotoSelect,
+    saveProfileSettings,
+
+    isEditingChats,
+    isDeletingChat,
+    isLeavingChat,
+
+    toggleChatEditMode,
+    deleteChatFromHome,
+    leaveGroupChat,
+
+    myGraffitiUsername,
+
+    copyGraffitiUsername,
+
+    getMemberProfile,
+    getMemberProfilePhotoUrl,
+    isMemberProfilePhotoMedia,
+
+    pollMemberProfiles,
+    isAnyChatModalOpen,
+
+    openNativePicker,
   };
 }
 
@@ -1653,7 +2670,32 @@ const ActorHandle = defineComponent({
     },
   },
   setup(props) {
+    const actorSession = useGraffitiSession();
+
     const { handle } = useGraffitiActorToHandle(() => props.actor);
+
+    const {
+      objects: actorProfileObjects,
+    } = useGraffitiDiscover(
+      () => (props.actor ? [props.actor] : []),
+      {
+        properties: {
+          value: {
+            required: ["type", "describes", "name", "published"],
+            properties: {
+              type: { const: "Profile" },
+              describes: { type: "string" },
+              name: { type: "string" },
+              icon: { type: "string" },
+              iconIsMedia: { type: "boolean" },
+              published: { type: "number" },
+            },
+          },
+        },
+      },
+      () => actorSession.value,
+      false
+    );
 
     function cleanHandle(value) {
       if (!value) return value;
@@ -1663,7 +2705,23 @@ const ActorHandle = defineComponent({
         .replace(/^@/, "");
     }
 
+    const latestProfile = computed(() => {
+      const profiles = actorProfileObjects.value
+        .filter((profile) => {
+          return profile.value.describes === props.actor;
+        })
+        .sort((a, b) => {
+          return b.value.published - a.value.published;
+        });
+
+      return profiles[0] || null;
+    });
+
     const displayName = computed(() => {
+      if (latestProfile.value?.value?.name) {
+        return latestProfile.value.value.name;
+      }
+
       if (handle.value) return cleanHandle(handle.value);
       if (handle.value === undefined) return "Loading...";
       return cleanHandle(props.actor);
@@ -1714,11 +2772,23 @@ const MessageBubble = defineComponent({
       });
     });
 
+    const isImageMessage = computed(() => {
+      return props.message?.value?.mediaType?.startsWith("image/");
+    });
+
+    const isVideoMessage = computed(() => {
+      return props.message?.value?.mediaType?.startsWith("video/");
+    });
+
     return {
       formattedTime,
+      isImageMessage,
+      isVideoMessage,
     };
   },
 });
+
+const DEFAULT_GROUP_PHOTO_URL_FOR_CARD = "https://placehold.co/160x160?text=Group";
 
 const ChatCard = defineComponent({
   name: "ChatCard",
@@ -1730,10 +2800,45 @@ const ChatCard = defineComponent({
     },
     showImage: {
       type: Boolean,
+      default: true,
+    },
+    editing: {
+      type: Boolean,
+      default: false,
+    },
+    deleting: {
+      type: Boolean,
       default: false,
     },
   },
-  emits: ["open-chat"],
+  emits: ["open-chat", "delete-chat"],
+  setup(props) {
+    const chatPhotoUrl = computed(() => {
+      return (
+        props.chat?.value?.icon ||
+        props.chat?.value?.photoUrl ||
+        DEFAULT_GROUP_PHOTO_URL_FOR_CARD
+      );
+    });
+
+    const chatPhotoIsMedia = computed(() => {
+      const icon = props.chat?.value?.icon || "";
+
+      return Boolean(
+        icon &&
+          (
+            props.chat?.value?.iconIsMedia ||
+            (!icon.startsWith("http://") && !icon.startsWith("https://"))
+          )
+      );
+    });
+
+    return {
+      chatPhotoUrl,
+      chatPhotoIsMedia,
+      DEFAULT_GROUP_PHOTO_URL_FOR_CARD,
+    };
+  },
 });
 
 const App = {
@@ -1742,6 +2847,7 @@ const App = {
     MessageBubble,
     ChatCard,
     ActorHandle,
+    // GraffitiGetMedia,
   },
   setup,
 };
