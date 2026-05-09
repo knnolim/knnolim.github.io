@@ -100,6 +100,8 @@ function setup() {
   const selectedProfilePhotoFile = ref(null);
   const localProfileObjects = ref([]);
 
+  const readMarkersTick = ref(0);
+
   function uniqueActors(actors) {
     return [...new Set((actors || []).filter(Boolean))];
   }
@@ -408,6 +410,28 @@ function setup() {
     }
 
     return true;
+  }
+
+  function readMarkerKey(channel) {
+    return `muddy-chat-last-read:${activeActor.value}:${channel}`;
+  }
+
+  function getLastReadAt(channel) {
+    readMarkersTick.value;
+
+    if (!activeActor.value || !channel) return 0;
+
+    const saved = localStorage.getItem(readMarkerKey(channel));
+    const parsed = Number(saved);
+
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+
+  function markChatRead(channel = activeChatChannel.value) {
+    if (!activeActor.value || !channel) return;
+
+    localStorage.setItem(readMarkerKey(channel), String(Date.now()));
+    readMarkersTick.value += 1;
   }
 
   const {
@@ -753,7 +777,11 @@ function setup() {
   });
 
   const allMessageObjects = computed(() => {
-    return dedupeByUrl([...localMessageObjects.value, ...messageObjects.value]);
+    return dedupeByUrl([
+      ...localMessageObjects.value,
+      ...messageObjects.value,
+      ...homepageMessageObjects.value,
+    ]);
   });
 
   const allAddObjects = computed(() => {
@@ -789,11 +817,59 @@ function setup() {
     });
   });
 
+  const homepageChatChannels = computed(() => {
+    return sortedChats.value.map((chat) => chat.value.channel);
+  });
+
+  const {
+    objects: homepageMessageObjects,
+    poll: pollHomepageMessages,
+  } = useGraffitiDiscover(
+    () => homepageChatChannels.value,
+    {
+      properties: {
+        value: {
+          required: [
+            "activity",
+            "type",
+            "content",
+            "chatChannel",
+            "published",
+          ],
+          properties: {
+            activity: { const: "Send" },
+            type: { const: "Message" },
+            content: { type: "string" },
+            chatChannel: { type: "string" },
+            mediaUrl: { type: "string" },
+            mediaType: { type: "string" },
+            mediaName: { type: "string" },
+            mediaSize: { type: "number" },
+            published: { type: "number" },
+          },
+        },
+      },
+    },
+    () => session.value,
+    true
+  );
+
   const sortedMessageObjects = computed(() => {
     return [...visibleMessageObjects.value].sort((a, b) => {
       return a.value.published - b.value.published;
     });
   });
+
+  watch(
+    sortedMessageObjects,
+    async () => {
+      if (currentRoute.value === "chat" && activeChatChannel.value) {
+        await scrollChatToLatestMessage();
+        markChatRead(activeChatChannel.value);
+      }
+    },
+    { flush: "post" }
+  );
 
   const allEventObjects = computed(() => {
     return dedupeByUrl([...localEventObjects.value, ...eventObjects.value]);
@@ -1203,11 +1279,16 @@ function setup() {
     }
   }
 
-  function openChat(chat) {
+  async function openChat(chat) {
+    markChatRead(chat.value.channel);
     navigateToPage("chat", chat.value.channel);
+
+    await pollMessages();
+    await scrollChatToLatestMessage();
   }
 
   function closeChat() {
+    markChatRead(activeChatChannel.value);
     goHome();
   }
 
@@ -1259,6 +1340,29 @@ function setup() {
     } finally {
       isDeletingChat.value.delete(channel);
     }
+  }
+
+  function unreadCountForChat(chat) {
+    if (!chat || !activeActor.value) return 0;
+
+    const channel = chat.value.channel;
+    const lastReadAt = getLastReadAt(channel);
+
+    return allMessageObjects.value.filter((message) => {
+      return (
+        message.value.chatChannel === channel &&
+        message.value.published > lastReadAt &&
+        message.actor !== activeActor.value
+      );
+    }).length;
+  }
+
+  function displayUnreadCount(chat) {
+    const count = unreadCountForChat(chat);
+
+    if (count > 99) return "99+";
+
+    return String(count);
   }
 
   function openSettings() {
@@ -1830,6 +1934,7 @@ function setup() {
       await pollDirectoryAdds();
       await pollAdds();
       await pollDeletedChats();
+      await pollHomepageMessages();
 
       goHome();
     } catch (error) {
@@ -2361,6 +2466,14 @@ function setup() {
     });
   }
 
+  async function scrollChatToLatestMessage() {
+    await nextTick();
+
+    if (!messagesEl.value) return;
+
+    messagesEl.value.scrollTop = messagesEl.value.scrollHeight;
+  }
+
   const isDeleting = ref(new Set());
 
   async function deleteMessage(message) {
@@ -2394,7 +2507,7 @@ function setup() {
       await scrollToBottom({ force: false });
     }
   );
-
+  
   watch(
     () => sortedMessageObjects.value.length,
     async (newLength, oldLength) => {
@@ -2417,6 +2530,8 @@ function setup() {
       await pollRsvps();
       await pollEvents();
       await pollStatuses();
+
+      await scrollChatToLatestMessage();
     }
 
     await scrollToBottom({ force: true });
@@ -2446,6 +2561,7 @@ function setup() {
     await pollDirectoryAdds();
     await pollProfiles();
     await pollDeletedChats();
+    await pollHomepageMessages();
 
     if (activeChatChannel.value) {
       shouldStickToBottom.value = true;
@@ -2470,6 +2586,7 @@ function setup() {
     await pollChats();
     await pollDirectoryAdds();
     await pollDeletedChats();
+    await pollHomepageMessages();
 
     if (activeChatChannel.value) {
       shouldStickToBottom.value = true;
@@ -2658,6 +2775,10 @@ function setup() {
     isAnyChatModalOpen,
 
     openNativePicker,
+
+    unreadCountForChat,
+    displayUnreadCount,
+    markChatRead,
   };
 }
 
@@ -2809,6 +2930,10 @@ const ChatCard = defineComponent({
     deleting: {
       type: Boolean,
       default: false,
+    },
+    unreadCount: {
+      type: Number,
+      default: 0,
     },
   },
   emits: ["open-chat", "delete-chat"],

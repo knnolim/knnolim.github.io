@@ -205,6 +205,7 @@
                             :show-image="true"
                             :editing="isEditingChats"
                             :deleting="isDeletingChat.has(chat.value.channel)"
+                            :unread-count="unreadCountForChat(chat)"
                             @open-chat="openChat"
                             @delete-chat="deleteChatFromHome"
                         ></chat-card>
@@ -1151,6 +1152,13 @@
                                 alt="Group"
                             />
                         </div>
+
+                        <span
+                            v-if="unreadCount > 0 && !editing"
+                            class="chat-unread-badge"
+                        >
+                            {{ unreadCount > 99 ? "99+" : unreadCount }}
+                        </span>
                     </div>
 
                     <div class="chat-label">{{ chat.value.title }}</div>

@@ -160,6 +160,8 @@ body {
 
 .title-wrap .chat-center {
     margin: 0 auto 8px;
+    width: 110px;
+    height: 110px;
 }
 
 .chat-title {
@@ -2041,4 +2043,29 @@ body {
     padding: 8px 12px;
     border-radius: 999px;
     color: #1c1300;
+}
+
+.chat-unread-badge {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    z-index: 5;
+
+    min-width: 30px;
+    height: 30px;
+    padding: 0 8px;
+    border-radius: 999px;
+
+    display: inline-grid;
+    place-items: center;
+
+    background: #6e2a1f;
+    color: #fff3ed;
+    border: 2px solid #d4bb9d;
+
+    font-size: 15px;
+    font-weight: 900;
+    line-height: 1;
+
+    box-shadow: 0 8px 16px rgba(0, 0, 0, 0.28);
 }
